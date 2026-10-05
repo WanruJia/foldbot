@@ -54504,6 +54504,30 @@ function posePlacing(t) {
   return T6;
 }
 function finishPlacing() {
+  const bin = BINS[plan.owner];
+  const pos = garment.mesh.geometry.attributes.position;
+  const ox = garment.mesh.position.x, oy = garment.mesh.position.y, oz = garment.mesh.position.z;
+  // 世界坐标包围盒
+  let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9, minY = 1e9;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i) + ox, y = pos.getY(i) + oy, z = pos.getZ(i) + oz;
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    if (y < minY) minY = y;
+  }
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+  // 烘焙时是 R(-yaw), 这里用 R(+yaw) 转回摆正
+  const cy = Math.cos(garment.yaw), sy = Math.sin(garment.yaw);
+  const dropY = 0.055 + binCounts[plan.owner] * 0.035;
+  const dy = dropY - minY;
+  for (let i = 0; i < pos.count; i++) {
+    const lx = pos.getX(i) + ox - cx, lz = pos.getZ(i) + oz - cz;
+    const rx = lx * cy - lz * sy, rz = lx * sy + lz * cy;
+    pos.setXYZ(i, bin.x + rx, pos.getY(i) + oy + dy, bin.z + rz);
+  }
+  pos.needsUpdate = true;
+  garment.mesh.geometry.computeVertexNormals();
+  garment.mesh.position.set(0, 0, 0);
   binCounts[plan.owner]++;
   updateBinCounts();
   placedMeshes.push(garment.mesh);
@@ -54698,7 +54722,7 @@ nextGarment();
 resize();
 setState('idle');
 updateBinCounts();
-window.__fb = { TL, get plan() { return plan; }, get garment() { return garment; }, foldEngine, binCounts };
+window.__fb = { TL, get plan() { return plan; }, get garment() { return garment; }, foldEngine, binCounts, placedMeshes, BINS };
 window.addEventListener('error', (e) => { document.title = 'ERR: ' + (e.message || e.error); });
 if (new URLSearchParams(location.search).has('autostart')) btnPlay.click();
 tick();
