@@ -72,6 +72,8 @@ export function classifyOwner(kind, k) {  let m, name;
   if (kind === 'shirt') {
     m = Math.hypot(k.shoulderR.x - k.shoulderL.x, k.shoulderR.z - k.shoulderL.z);
     name = '肩宽';
+    // 仿真用相对尺寸（与 3D 衣服模型匹配）。真机用 planning/fold_planner.py 里的真实阈值
+    // (2026-10-05 实测: 爸爸43 / 妈妈35 / 女儿32 / 儿子27-32 cm)
     if (m >= 0.69) return { owner: 'dad', metric: m, metricName: name };
     if (m >= 0.595) return { owner: 'mom', metric: m, metricName: name };
     if (m >= 0.50) return { owner: 'daughter', metric: m, metricName: name };
