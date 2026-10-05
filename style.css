@@ -1,0 +1,56 @@
+* { margin: 0; padding: 0; box-sizing: border-box; }
+html, body { height: 100%; }
+body {
+  font-family: -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  background: #f6f1ea; color: #3a342c;
+  display: flex; align-items: center; justify-content: center;
+  min-height: 100vh; padding: 20px;
+}
+#app {
+  display: flex; gap: 20px; width: min(1280px, 100%);
+  background: #fffdf9; border-radius: 20px; padding: 20px;
+  box-shadow: 0 12px 40px rgba(120, 90, 60, 0.12);
+}
+#stage { flex: 1; min-width: 0; }
+#scene { width: 100%; height: min(78vh, 720px); display: block; border-radius: 14px; background: #f6f1ea; }
+#panel { width: 320px; flex-shrink: 0; display: flex; flex-direction: column; gap: 14px; }
+h1 { font-size: 26px; letter-spacing: 1px; }
+h1 span { font-size: 18px; color: #a08b6f; font-weight: 600; }
+.sub { color: #8a7a64; font-size: 13px; margin-top: -8px; }
+#steps { display: flex; gap: 8px; }
+.pill {
+  flex: 1; text-align: center; padding: 10px 0; border-radius: 12px;
+  background: #f1ece2; color: #8a7a64; font-size: 14px; transition: all 0.25s;
+}
+.pill b {
+  display: inline-block; width: 22px; height: 22px; line-height: 22px; border-radius: 50%;
+  background: #d8cbb6; color: #fff; font-size: 13px; margin-right: 6px;
+}
+.pill.active { background: #fff4e0; color: #b0781f; box-shadow: inset 0 0 0 2px #f0c96a; }
+.pill.active b { background: #f0b429; }
+.pill.done { background: #e8f5e9; color: #2e7d32; }
+.pill.done b { background: #66bb6a; }
+#status {
+  min-height: 52px; padding: 12px 14px; border-radius: 12px;
+  background: #f7f3ec; font-size: 14px; line-height: 1.6; color: #5c5044;
+}
+#controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+button {
+  border: none; border-radius: 10px; padding: 10px 16px; font-size: 14px;
+  background: #efe8da; color: #5c5044; cursor: pointer; transition: all 0.2s;
+}
+button:hover { background: #e5dac5; }
+button.primary { background: #ff8a5c; color: #fff; font-weight: 700; }
+button.primary:hover { background: #f0753f; }
+#speed { display: flex; gap: 4px; margin-left: auto; }
+#speed button { padding: 8px 10px; font-size: 12px; }
+#speed button.on { background: #3a342c; color: #fff; }
+#eyepanel { background: #2b2620; border-radius: 14px; padding: 12px; }
+.eyelabel { color: #f0e6d4; font-size: 12px; margin-bottom: 8px; letter-spacing: 1px; }
+#inset { width: 100%; border-radius: 8px; display: block; background: #1a1712; }
+.note { font-size: 12px; color: #a08b6f; line-height: 1.7; }
+@media (max-width: 900px) {
+  #app { flex-direction: column; }
+  #panel { width: 100%; }
+  #scene { height: 52vh; }
+}

@@ -1,0 +1,42 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>FoldBot · 叠衣机器人</title>
+<link rel="stylesheet" href="style.css" />
+<script type="importmap">
+{ "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
+</script>
+</head>
+<body>
+<div id="app">
+  <div id="stage"><canvas id="scene"></canvas></div>
+  <aside id="panel">
+    <h1>FoldBot <span>叠衣机器人</span></h1>
+    <p class="sub">ABC 三点叠衣法 · 关键点检测驱动</p>
+    <div id="steps">
+      <div class="pill" id="stepA"><b>A</b>感知</div>
+      <div class="pill" id="stepB"><b>B</b>翻折</div>
+      <div class="pill" id="stepC"><b>C</b>对折</div>
+    </div>
+    <div id="status">点击「播放」开始叠衣</div>
+    <div id="controls">
+      <button id="btnPlay" class="primary">▶ 播放</button>
+      <button id="btnAgain">再叠一件</button>
+      <div id="speed">
+        <button data-speed="0.5">0.5×</button>
+        <button data-speed="1" class="on">1×</button>
+        <button data-speed="2">2×</button>
+      </div>
+    </div>
+    <div id="eyepanel">
+      <div class="eyelabel">机器人视角 · 关键点检测</div>
+      <canvas id="inset" width="320" height="320"></canvas>
+    </div>
+    <p class="note">A=肩点 · B=中点 · C=下摆点 —— 全部来自俯视相机的实时检测，不是写死的坐标。每次「再叠一件」衣服都会随机换色、换位置、换角度。</p>
+  </aside>
+</div>
+<script type="module" src="app.js"></script>
+</body>
+</html>
