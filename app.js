@@ -60,15 +60,15 @@ scene.add(fill);
   }
 }
 
-// ---------- 四个衣箱 (机械臂后方, 靠近操作者) ----------
-const BINS = {
-  dad: { x: -1.05, z: 0.88 },
-  mom: { x: -0.35, z: 0.88 },
-  daughter: { x: 0.35, z: 0.88 },
-  son: { x: 1.05, z: 0.88 },
-};
-const binCounts = { dad: 0, mom: 0, daughter: 0, son: 0 };
+// ---------- 动态衣箱 (可配置 + 自动聚类) ----------
+let binMode = 'auto'; // 'auto': 从衣服尺寸聚类推断人数; 'fixed': 爸爸/妈妈/女儿/儿子
+const MAX_BINS = 6;
+const BIN_COLORS = [0x5b7fa6, 0xc98a9b, 0x9b8ac9, 0x7fb8a4, 0xd9a441, 0x8ad9c9];
+const CLUSTER_THRESH = 0.07; // 尺寸聚类阈值
+let bins = []; // [{id, label, color, center, count, x, z}]
+let binMeshes = {}; // id -> {group, label}
 const placedMeshes = [];
+
 function makeBinLabel(text, colorHex) {
   const c = document.createElement('canvas'); c.width = 256; c.height = 96;
   const x = c.getContext('2d');
@@ -82,31 +82,84 @@ function makeBinLabel(text, colorHex) {
   sp.scale.set(0.42, 0.1575, 1); sp.renderOrder = 10;
   return sp;
 }
-function buildBins() {
-  for (const owner of OWNER_KEYS) {
-    const { x, z } = BINS[owner];
-    const color = OWNERS[owner].binColor;
-    const hex = '#' + new THREE.Color(color).getHexString();
-    const g = new THREE.Group();
-    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.65 });
-    const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.03, 0.42), mat);
-    base.position.y = 0.015; g.add(base);
-    const wallH = 0.14, t = 0.02;
-    const mkWall = (w, d, px, pz) => {
-      const m = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), mat);
-      m.position.set(px, 0.03 + wallH / 2, pz); g.add(m);
-    };
-    mkWall(0.5, t, 0, -0.21 + t / 2); mkWall(0.5, t, 0, 0.21 - t / 2);
-    mkWall(t, 0.42, -0.25 + t / 2, 0); mkWall(t, 0.42, 0.25 - t / 2, 0);
-    g.position.set(x, 0, z);
-    g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
-    scene.add(g);
-    const label = makeBinLabel(OWNERS[owner].label, hex);
-    label.position.set(x, 0.42, z);
-    scene.add(label);
-  }
+function createBinVisual(bin) {
+  const hex = '#' + new THREE.Color(bin.color).getHexString();
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: bin.color, roughness: 0.65 });
+  const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.03, 0.42), mat);
+  base.position.y = 0.015; g.add(base);
+  const wallH = 0.14, t = 0.02;
+  const mkWall = (w, d, px, pz) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), mat);
+    m.position.set(px, 0.03 + wallH / 2, pz); g.add(m);
+  };
+  mkWall(0.5, t, 0, -0.21 + t / 2); mkWall(0.5, t, 0, 0.21 - t / 2);
+  mkWall(t, 0.42, -0.25 + t / 2, 0); mkWall(t, 0.42, 0.25 - t / 2, 0);
+  g.position.set(bin.x, 0, bin.z);
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  scene.add(g);
+  const label = makeBinLabel(bin.label, hex);
+  label.position.set(bin.x, 0.42, bin.z);
+  scene.add(label);
+  binMeshes[bin.id] = { group: g, label };
 }
-buildBins();
+function layoutBins() {
+  const n = bins.length;
+  const spacing = 0.62;
+  const startX = -(n - 1) * spacing / 2;
+  bins.forEach((b, i) => {
+    b.x = startX + i * spacing;
+    b.z = 0.88;
+    const m = binMeshes[b.id];
+    if (m) { m.group.position.set(b.x, 0, b.z); m.label.position.set(b.x, 0.42, b.z); }
+  });
+}
+function clearBins() {
+  for (const id in binMeshes) {
+    scene.remove(binMeshes[id].group);
+    scene.remove(binMeshes[id].label);
+  }
+  bins = []; binMeshes = {};
+  document.getElementById('bins').innerHTML = '';
+}
+function addBinCounter(bin) {
+  const hex = '#' + new THREE.Color(bin.color).getHexString();
+  const d = document.createElement('div');
+  d.className = 'bincount';
+  d.innerHTML = `<i style="background:${hex}"></i>${bin.label} <b id="c-${bin.id}">0</b>`;
+  document.getElementById('bins').appendChild(d);
+}
+function initFixedBins() {
+  clearBins();
+  OWNER_KEYS.forEach((owner, i) => {
+    const bin = { id: owner, label: OWNERS[owner].label, color: OWNERS[owner].binColor,
+                  center: null, count: 0, x: 0, z: 0.88 };
+    bins.push(bin); createBinVisual(bin); addBinCounter(bin);
+  });
+  layoutBins();
+}
+function assignBin(metric) {
+  // 自动聚类：找最近的簇，距离 < 阈值则归入，否则新建
+  let best = null, bestDist = 1e9;
+  for (const b of bins) {
+    if (b.center === null) continue;
+    const d = Math.abs(metric - b.center);
+    if (d < bestDist) { bestDist = d; best = b; }
+  }
+  if (best && bestDist < CLUSTER_THRESH) {
+    best.center = (best.center * best.count + metric) / (best.count + 1);
+    return best;
+  }
+  if (bins.length >= MAX_BINS) return best; // 满了，归入最近的
+  const id = 'p' + (bins.length + 1);
+  const bin = { id, label: `成员${bins.length + 1}`,
+                color: BIN_COLORS[bins.length % BIN_COLORS.length],
+                center: metric, count: 0, x: 0, z: 0.88 };
+  bins.push(bin); createBinVisual(bin); addBinCounter(bin); layoutBins();
+  return bin;
+}
+// 启动时用自动模式（空箱子，等衣服来了再聚类）
+clearBins();
 
 // ---------- 待洗篮 (桌子对面, 机械臂前方) ----------
 const BASKET = { x: 0, z: -0.48 };
@@ -382,6 +435,12 @@ function detectAndPlan() {
     ];
   }
   plan = { kind, kindLabel, owner, cls, folds, markers, up, right, kp, img, kw };
+  // 分配衣箱：固定模式按家人，自动模式按尺寸聚类
+  if (binMode === 'fixed') {
+    plan.bin = bins.find(b => b.id === owner) || bins[0];
+  } else {
+    plan.bin = assignBin(cls.metric);
+  }
   return plan;
 }
 
@@ -423,12 +482,12 @@ function setState(s) {
   }
   else if (s === 'placing') {
     setPills(2 + plan.folds.length);
-    setStatus(`归位 — ${plan.kindLabel}·${plan.cls.metricName}${plan.cls.metric.toFixed(2)}，是「${OWNERS[plan.owner].label}」的`);
+    setStatus(`归位 — ${plan.kindLabel}·${plan.cls.metricName}${plan.cls.metric.toFixed(2)}，放入「${plan.bin.label}」`);
     setupPlacing();
   }
   else if (s === 'done') {
     setPills('done');
-    if (TL.sortMode) setStatus(`✓ 放入「${OWNERS[plan.owner].label}」的箱子`);
+    if (TL.sortMode) setStatus(`✓ 放入「${plan.bin.label}」的箱子`);
     else { setStatus('叠好并分拣完成! ✨'); burstConfetti(); }
   }
   else if (s === 'idle') { setPills(-1); setStatus('选择衣服种类，点击「播放」开始'); }
@@ -528,9 +587,10 @@ function setupPlacing() {
     if (y > maxY) maxY = y;
   }
   const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
-  const bin = BINS[plan.owner];
-  const arm = (plan.owner === 'dad' || plan.owner === 'mom') ? 'L' : 'R';
-  TL.place = { arm, bin, cx, cz, topY: maxY, dropY: 0.06 + binCounts[plan.owner] * 0.035 };
+  const bin = plan.bin;
+  // 按箱子左右位置分配手臂：左半用左臂，右半用右臂
+  const arm = bin.x < 0 ? 'L' : 'R';
+  TL.place = { arm, bin, cx, cz, topY: maxY, dropY: 0.06 + bin.count * 0.035 };
 }
 function posePlacing(t) {
   const P = TL.place;
@@ -557,7 +617,7 @@ function posePlacing(t) {
   return T6;
 }
 function finishPlacing() {
-  const bin = BINS[plan.owner];
+  const bin = plan.bin;
   const pos = garment.mesh.geometry.attributes.position;
   const ox = garment.mesh.position.x, oy = garment.mesh.position.y, oz = garment.mesh.position.z;
   // 世界坐标包围盒
@@ -571,7 +631,7 @@ function finishPlacing() {
   const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
   // 烘焙时是 R(-yaw), 这里用 R(+yaw) 转回摆正
   const cy = Math.cos(garment.yaw), sy = Math.sin(garment.yaw);
-  const dropY = 0.055 + binCounts[plan.owner] * 0.035;
+  const dropY = 0.055 + bin.count * 0.035;
   const dy = dropY - minY;
   for (let i = 0; i < pos.count; i++) {
     const lx = pos.getX(i) + ox - cx, lz = pos.getZ(i) + oz - cz;
@@ -581,8 +641,8 @@ function finishPlacing() {
   pos.needsUpdate = true;
   garment.mesh.geometry.computeVertexNormals();
   garment.mesh.position.set(0, 0, 0);
-  binCounts[plan.owner]++;
-  updateBinCounts();
+  bin.count++;
+  document.getElementById('c-' + bin.id).textContent = bin.count;
   placedMeshes.push(garment.mesh);
   garment = null;
   foldEngine.reset();
@@ -642,7 +702,7 @@ function drawInset() {
   };
   x.font = 'bold 15px sans-serif'; x.textAlign = 'left';
   x.lineWidth = 4; x.strokeStyle = 'rgba(0,0,0,0.55)'; x.fillStyle = '#fff';
-  const info = `${plan.kindLabel} · ${plan.cls.metricName}${plan.cls.metric.toFixed(2)} → ${OWNERS[plan.owner].label}`;
+  const info = `${plan.kindLabel} · ${plan.cls.metricName}${plan.cls.metric.toFixed(2)} → ${plan.bin.label}`;
   x.strokeText(info, 10, 24); x.fillText(info, 10, 24);
   if (kind === 'shirt') {
     const aPx = w2px(plan.kw.A.x, plan.kw.A.z);
@@ -719,12 +779,32 @@ window.addEventListener('resize', resize);
 // ---------- UI ----------
 const btnPlay = document.getElementById('btnPlay');
 const btnSort = document.getElementById('btnSort');
+const btnBinAuto = document.getElementById('btnBinAuto');
+const btnBinFixed = document.getElementById('btnBinFixed');
+function setBinMode(mode) {
+  if (binMode === mode) return;
+  binMode = mode;
+  btnBinAuto.classList.toggle('on', mode === 'auto');
+  btnBinFixed.classList.toggle('on', mode === 'fixed');
+  // 清掉已放的衣服，重置衣箱
+  for (const m of placedMeshes) scene.remove(m);
+  placedMeshes.length = 0;
+  if (mode === 'fixed') initFixedBins();
+  else clearBins();
+  updateBinCounts();
+  setStatus(mode === 'auto' ? '自动模式 — 按衣服尺寸聚类识别人数' : '固定模式 — 爸爸/妈妈/女儿/儿子');
+}
+btnBinAuto.addEventListener('click', () => setBinMode('auto'));
+btnBinFixed.addEventListener('click', () => setBinMode('fixed'));
 function updateSortBtn() {
   btnSort.textContent = TL.sortMode ? '⏹ 停止分拣' : '🔁 连续分拣';
   btnSort.classList.toggle('on', TL.sortMode);
 }
 function updateBinCounts() {
-  for (const o of OWNER_KEYS) document.getElementById('c-' + o).textContent = binCounts[o];
+  for (const b of bins) {
+    const el = document.getElementById('c-' + b.id);
+    if (el) el.textContent = b.count;
+  }
 }
 btnPlay.addEventListener('click', () => {
   if (TL.sortMode) { // 分拣中: 暂停/继续
@@ -775,7 +855,7 @@ nextGarment();
 resize();
 setState('idle');
 updateBinCounts();
-window.__fb = { TL, get plan() { return plan; }, get garment() { return garment; }, foldEngine, binCounts, placedMeshes, BINS };
+window.__fb = { TL, get plan() { return plan; }, get garment() { return garment; }, foldEngine, get bins() { return bins; }, placedMeshes };
 window.addEventListener('error', (e) => { document.title = 'ERR: ' + (e.message || e.error); });
 if (new URLSearchParams(location.search).has('autostart')) btnPlay.click();
 tick();

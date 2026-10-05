@@ -39,6 +39,12 @@ A dual-arm robot that folds laundry **and sorts it by family member**. Nothing i
 3. **归位 Sort**：机械臂抓起叠好的衣服，放入臂后方对应家人的衣箱，计数 +1
    An arm picks up the folded garment and drops it into the owner's bin behind the arms
 
+### 衣箱模式 Bin modes
+- **自动识别人数 Auto**（默认）：按衣服尺寸（肩宽/腰宽）聚类，动态推断有几个人，衣箱自动生成（成员1、成员2…，最多6个）
+  Clusters garments by size to infer household members; bins are created dynamically
+- **固定四人 Fixed**：爸爸 / 妈妈 / 女儿 / 儿子
+  Fixed four bins: dad / mom / daughter / son
+
 机器人视角小窗实时显示检测结果（轮廓、关键点、折痕线、种类与归属判定）。
 The robot-view inset shows live detection: contour, keypoints, crease lines, and the type/owner verdict.
 
