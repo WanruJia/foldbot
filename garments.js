@@ -188,9 +188,10 @@ function bakePlacement(geo, ox, oz, yaw) {
 /**
  * 建一件衣服。kindKey: 'tee'|'tee-long'|'pants-long'|'pants-short'|'random';
  * ownerKey: 'dad'|'mom'|'daughter'|'son'|'random'。
+ * at: 可选 {x, z} 生成位置 (默认随机)。
  * 返回 {mesh, base, W, H, kind, kindKey, owner, rgb, yaw, ox, oz}
  */
-export function buildGarmentMesh(kindKey, ownerKey) {
+export function buildGarmentMesh(kindKey, ownerKey, at = null) {
   const kind = kindKey === 'random' ? KIND_KEYS[(Math.random() * KIND_KEYS.length) | 0] : kindKey;
   const owner = ownerKey === 'random' ? OWNER_KEYS[(Math.random() * OWNER_KEYS.length) | 0] : ownerKey;
   const kd = KINDS[kind];
@@ -206,7 +207,9 @@ export function buildGarmentMesh(kindKey, ownerKey) {
     seg = [Math.max(20, Math.round(56 * drawn.W)), Math.max(24, Math.round(56 * drawn.H))];
   }
   const geo = new THREE.PlaneGeometry(drawn.W, drawn.H, seg[0], seg[1]);
-  const yaw = (Math.random() - 0.5) * 0.7, ox = (Math.random() - 0.5) * 0.3, oz = (Math.random() - 0.5) * 0.2;
+  const yaw = (Math.random() - 0.5) * 0.7;
+  const ox = at ? at.x + (Math.random() - 0.5) * 0.12 : (Math.random() - 0.5) * 0.3;
+  const oz = at ? at.z + (Math.random() - 0.5) * 0.1 : (Math.random() - 0.5) * 0.2;
   const base = bakePlacement(geo, ox, oz, yaw);
   const mat = new THREE.MeshStandardMaterial({
     map: drawn.tex, transparent: true, alphaTest: 0.45,

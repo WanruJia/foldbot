@@ -60,12 +60,12 @@ scene.add(fill);
   }
 }
 
-// ---------- 四个衣箱 ----------
+// ---------- 四个衣箱 (机械臂后方, 靠近操作者) ----------
 const BINS = {
-  dad: { x: -1.12, z: -0.25 },
-  mom: { x: -1.12, z: 0.50 },
-  daughter: { x: 1.12, z: -0.25 },
-  son: { x: 1.12, z: 0.50 },
+  dad: { x: -1.05, z: 0.88 },
+  mom: { x: -0.35, z: 0.88 },
+  daughter: { x: 0.35, z: 0.88 },
+  son: { x: 1.05, z: 0.88 },
 };
 const binCounts = { dad: 0, mom: 0, daughter: 0, son: 0 };
 const placedMeshes = [];
@@ -108,15 +108,62 @@ function buildBins() {
 }
 buildBins();
 
+// ---------- 待洗篮 (桌子对面, 机械臂前方) ----------
+const BASKET = { x: 0, z: -0.48 };
+function buildBasket() {
+  const g = new THREE.Group();
+  const mat = new THREE.MeshStandardMaterial({ color: 0xb8a88e, roughness: 0.8 });
+  const W = 0.72, D = 0.5, H = 0.26, t = 0.025;
+  const base = new THREE.Mesh(new THREE.BoxGeometry(W, 0.03, D), mat);
+  base.position.y = 0.015; g.add(base);
+  const mkWall = (w, d, px, pz) => {
+    const m = new THREE.Mesh(new THREE.BoxGeometry(w, H, d), mat);
+    m.position.set(px, 0.03 + H / 2, pz); g.add(m);
+  };
+  mkWall(W, t, 0, -D / 2 + t / 2); mkWall(W, t, 0, D / 2 - t / 2);
+  mkWall(t, D, -W / 2 + t / 2, 0); mkWall(t, D, W / 2 - t / 2, 0);
+  // 篮子里几件团起来的衣服 (装饰)
+  const cols = [0xd9a7a7, 0xa7c4d9, 0xb8d9a7];
+  for (let i = 0; i < 3; i++) {
+    const m = new THREE.Mesh(
+      new THREE.BoxGeometry(0.3 + Math.random() * 0.15, 0.07, 0.22 + Math.random() * 0.1),
+      new THREE.MeshStandardMaterial({ color: cols[i], roughness: 0.95 })
+    );
+    m.position.set((Math.random() - 0.5) * 0.25, 0.06 + i * 0.065, (Math.random() - 0.5) * 0.15);
+    m.rotation.y = (Math.random() - 0.5) * 0.9;
+    m.castShadow = true; g.add(m);
+  }
+  g.position.set(BASKET.x, 0, BASKET.z);
+  g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+  scene.add(g);
+}
+buildBasket();
+
 // ---------- 衣服 ----------
 let garment = null; // {mesh, base, W, H, kind, kindKey, owner, rgb, yaw, ox, oz}
 let currentKindKey = 'random';
+let pickCount = 0;
 function nextGarment() {
   if (garment) { scene.remove(garment.mesh); disposeGarmentMesh(garment); }
-  garment = buildGarmentMesh(currentKindKey, 'random');
+  garment = buildGarmentMesh(currentKindKey, 'random', BASKET); // 在待洗篮里生成
+  // 衣服放在篮内衣物堆上
+  garment.mesh.position.y = 0.20;
   scene.add(garment.mesh);
   foldEngine.reset(); hideMarkers(); plan = null;
   const x = inset.getContext('2d'); x.clearRect(0, 0, inset.width, inset.height);
+}
+// 取衣后把衣服落定在折叠区中央, 重新烘焙顶点
+function settleGarmentAtCenter() {
+  const pos = garment.mesh.geometry.attributes.position;
+  const ox = garment.mesh.position.x, oz = garment.mesh.position.z;
+  for (let i = 0; i < pos.count; i++) {
+    pos.setXYZ(i, pos.getX(i) + ox, 0.002, pos.getZ(i) + oz);
+  }
+  pos.needsUpdate = true;
+  garment.mesh.geometry.computeVertexNormals();
+  garment.mesh.position.set(0, 0, 0);
+  garment.ox = 0; garment.oz = 0;
+  garment.base = new Float32Array(pos.array);
 }
 
 // ---------- 折叠引擎 ----------
@@ -350,10 +397,10 @@ const stepsEl = document.getElementById('steps');
 let pillEls = [];
 function buildPills() {
   stepsEl.innerHTML = ''; pillEls = [];
-  const labels = ['A·感知', ...plan.folds.map((f) => f.label), '归位'];
+  const labels = ['取衣', 'A·感知', ...plan.folds.map((f) => f.label), '归位'];
   labels.forEach((lb, i) => {
     const d = document.createElement('div');
-    d.className = 'pill'; d.innerHTML = `<b>${'ABCDE'[i] || '·'}</b>${lb.replace(/^[A-Z]·/, '')}`;
+    d.className = 'pill'; d.innerHTML = `<b>${'ABCDEFGH'[i] || '·'}</b>${lb.replace(/^[A-Z]·/, '')}`;
     stepsEl.appendChild(d); pillEls.push(d);
   });
 }
@@ -368,13 +415,14 @@ function setStatus(t) { statusEl.textContent = t; }
 
 function setState(s) {
   TL.state = s; TL.t = 0; TL.foldStarted = false; TL.entered = false; TL.released = false;
-  if (s === 'detecting') { setPills(0); setStatus('A·感知 — 俯视相机识别种类、检测关键点…'); }
+  if (s === 'picking') { setPills(0); setStatus('取衣 — 机械臂从待洗篮拿一件到折叠区…'); setupPicking(); }
+  else if (s === 'detecting') { setPills(1); setStatus('A·感知 — 俯视相机识别种类、检测关键点…'); }
   else if (s === 'fold') {
     const i = TL.foldIdx, step = plan.folds[i];
-    setPills(1 + i); setStatus(`${'BCD'[i] || '·'}·${step.label}`); hideMarkers();
+    setPills(2 + i); setStatus(`${'BCD'[i] || '·'}·${step.label}`); hideMarkers();
   }
   else if (s === 'placing') {
-    setPills(1 + plan.folds.length);
+    setPills(2 + plan.folds.length);
     setStatus(`归位 — ${plan.kindLabel}·${plan.cls.metricName}${plan.cls.metric.toFixed(2)}，是「${OWNERS[plan.owner].label}」的`);
     setupPlacing();
   }
@@ -428,6 +476,47 @@ function poseFoldStep(t, step) {
   return endT;
 }
 
+// ---------- 取衣 (从待洗篮拿到折叠区) ----------
+function setupPicking() {
+  const pos = garment.mesh.geometry.attributes.position;
+  let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9, maxY = -1e9;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    if (y > maxY) maxY = y;
+  }
+  // mesh.position.y=0.20 (在衣堆上), 实际世界坐标要加上
+  const cx = (minX + maxX) / 2 + garment.mesh.position.x;
+  const cz = (minZ + maxZ) / 2 + garment.mesh.position.z;
+  const topY = maxY + garment.mesh.position.y;
+  const arm = (pickCount++ % 2 === 0) ? 'L' : 'R'; // 双臂轮流取衣
+  TL.pick = { arm, cx, cz, topY };
+}
+function posePicking(t) {
+  const P = TL.pick;
+  const arm = P.arm === 'L' ? armL : armR, home = P.arm === 'L' ? HOME_L : HOME_R;
+  const other = P.arm === 'L' ? armR : armL, otherHome = P.arm === 'L' ? HOME_R : HOME_L;
+  const aboveB = { x: P.cx, y: 0.55, z: P.cz };
+  const grab = { x: P.cx, y: P.topY + 0.03, z: P.cz };
+  const liftB = { x: P.cx, y: 0.62, z: P.cz };
+  const aboveC = { x: 0, y: 0.62, z: 0 };
+  const drop = { x: 0, y: 0.06, z: 0 };
+  const T1 = 0.7, T2 = 1.2, T3 = 1.7, T4 = 2.7, T5 = 3.2, T6 = 3.8;
+  let p, open;
+  if (t < T1) { const s = seg01(t, 0, T1); p = lerp3(home, aboveB, s); open = 0.7; }
+  else if (t < T2) { const s = seg01(t, T1, T2); p = lerp3(aboveB, grab, s); open = lerp(0.7, 0.12, s); }
+  else if (t < T3) { const s = seg01(t, T2, T3); p = lerp3(grab, liftB, s); open = 0.12; }
+  else if (t < T4) { const s = seg01(t, T3, T4); p = lerp3(liftB, aboveC, s); open = 0.12; }
+  else if (t < T5) { const s = seg01(t, T4, T5); p = lerp3(aboveC, drop, s); open = 0.12; }
+  else { const s = seg01(t, T5, T6); p = lerp3(drop, aboveC, s); open = lerp(0.12, 0.7, s); }
+  armTo(arm, p, open);
+  armTo(other, otherHome, 0.7);
+  if (t >= T2 && t < T5 && garment) {
+    garment.mesh.position.set(p.x - P.cx, p.y - 0.03 - P.topY, p.z - P.cz);
+  }
+  return T6;
+}
 // ---------- 归位 (抓取叠好的衣服放入衣箱) ----------
 function setupPlacing() {
   const pos = garment.mesh.geometry.attributes.position;
@@ -562,7 +651,10 @@ function tick() {
   const dt = TL.running ? rawDt * TL.timeScale : 0;
   if (dt > 0) {
     TL.t += dt;
-    if (TL.state === 'detecting') {
+    if (TL.state === 'picking') {
+      const endT = posePicking(TL.t);
+      if (TL.t >= endT) { settleGarmentAtCenter(); setState('detecting'); }
+    } else if (TL.state === 'detecting') {
       if (!TL.entered) {
         TL.entered = true;
         detectAndPlan(); drawInset(); showMarkers(); buildPills(); setPills(0);
@@ -582,7 +674,7 @@ function tick() {
     } else if (TL.state === 'done') {
       if (TL.sortMode && TL.t > 1.2) {
         currentKindKey = 'random';
-        nextGarment(); setState('detecting');
+        nextGarment(); setState('picking');
       } else if (!TL.sortMode) {
         TL.running = false;
         document.getElementById('btnPlay').textContent = '▶ 播放';
@@ -618,7 +710,7 @@ btnPlay.addEventListener('click', () => {
   }
   if (TL.state === 'idle' || TL.state === 'done') {
     if (TL.state === 'done' || !garment) nextGarment();
-    TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
+    TL.running = true; setState('picking'); btnPlay.textContent = '⏸ 暂停';
   } else {
     TL.running = !TL.running;
     btnPlay.textContent = TL.running ? '⏸ 暂停' : '▶ 播放';
@@ -626,7 +718,7 @@ btnPlay.addEventListener('click', () => {
 });
 document.getElementById('btnAgain').addEventListener('click', () => {
   TL.sortMode = false; updateSortBtn();
-  nextGarment(); TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
+  nextGarment(); TL.running = true; setState('picking'); btnPlay.textContent = '⏸ 暂停';
 });
 btnSort.addEventListener('click', () => {
   TL.sortMode = !TL.sortMode; updateSortBtn();
@@ -634,7 +726,7 @@ btnSort.addEventListener('click', () => {
     currentKindKey = 'random';
     document.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('on', b.dataset.kind === 'random'));
     if (TL.state === 'idle' || TL.state === 'done') nextGarment();
-    TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
+    TL.running = true; setState('picking'); btnPlay.textContent = '⏸ 暂停';
   }
   // 关闭分拣: 当前这件完成后回到 idle (done 状态处理)
 });

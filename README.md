@@ -24,7 +24,9 @@ A dual-arm robot that folds laundry **and sorts it by family member**. Nothing i
 
 ## 工作流程 How it works
 
-1. **感知 Perception**：俯视相机抓拍 → 颜色分割 → 轮廓 → 凸包 + 凹点分析
+1. **取衣 Pick**：机械臂从对面的待洗篮拿一件衣服到中央折叠区
+   An arm picks a garment from the laundry basket across the table to the folding area
+2. **感知 Perception**：俯视相机抓拍 → 颜色分割 → 轮廓 → 凸包 + 凹点分析
    Overhead snapshot → color segmentation → contour → convex hull + concavity analysis
    - 先识别种类：下半部有多条水平线被分成左右两段 → 裤子（裆槽），否则 T 恤
      Classify first: pants if scanlines in the lower half split into two runs (crotch slot), else tee
@@ -34,8 +36,8 @@ A dual-arm robot that folds laundry **and sorts it by family member**. Nothing i
      Measure to classify: shoulder width for tees, waist width for pants → dad / mom / daughter / son
 2. **折叠 Fold**：双臂按规划执行（抓臂跟踪布料到 75% 提前松手，另一臂按住折痕）
    Dual arms execute the plan (grasp arm tracks the cloth to 75% then releases early, the other holds the crease)
-3. **归位 Sort**：机械臂抓起叠好的衣服，放入对应家人的衣箱，计数 +1
-   An arm picks up the folded garment and drops it into the owner's bin
+3. **归位 Sort**：机械臂抓起叠好的衣服，放入臂后方对应家人的衣箱，计数 +1
+   An arm picks up the folded garment and drops it into the owner's bin behind the arms
 
 机器人视角小窗实时显示检测结果（轮廓、关键点、折痕线、种类与归属判定）。
 The robot-view inset shows live detection: contour, keypoints, crease lines, and the type/owner verdict.
