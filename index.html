@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-<title>FoldBot · 叠衣机器人</title>
+<title>FoldBot · 叠衣分拣机器人</title>
 <link rel="stylesheet" href="style.css" />
 <script type="importmap">
 { "imports": { "three": "https://unpkg.com/three@0.160.0/build/three.module.js" } }
@@ -13,28 +13,38 @@
 <div id="app">
   <div id="stage"><canvas id="scene"></canvas></div>
   <aside id="panel">
-    <h1>FoldBot <span>叠衣机器人</span></h1>
-    <p class="sub">ABC 三点叠衣法 · 关键点检测驱动</p>
-    <div id="steps">
-      <div class="pill" id="stepA"><b>A</b>感知</div>
-      <div class="pill" id="stepB"><b>B</b>翻折</div>
-      <div class="pill" id="stepC"><b>C</b>对折</div>
+    <h1>FoldBot <span>叠衣分拣机器人</span></h1>
+    <p class="sub">ABC 叠衣法 · 关键点检测 · 按家人分拣</p>
+    <div id="steps"></div>
+    <div id="status">选择衣服种类，点击「播放」开始</div>
+    <div id="kindpicker">
+      <button data-kind="random" class="on">🎲 随机</button>
+      <button data-kind="tee">T恤</button>
+      <button data-kind="tee-long">长袖T恤</button>
+      <button data-kind="pants-long">长裤</button>
+      <button data-kind="pants-short">短裤</button>
     </div>
-    <div id="status">点击「播放」开始叠衣</div>
     <div id="controls">
       <button id="btnPlay" class="primary">▶ 播放</button>
       <button id="btnAgain">再叠一件</button>
+      <button id="btnSort">🔁 连续分拣</button>
       <div id="speed">
         <button data-speed="0.5">0.5×</button>
         <button data-speed="1" class="on">1×</button>
         <button data-speed="2">2×</button>
       </div>
     </div>
+    <div id="bins">
+      <div class="bincount"><i style="background:#5b7fa6"></i>爸爸 <b id="c-dad">0</b></div>
+      <div class="bincount"><i style="background:#c98a9b"></i>妈妈 <b id="c-mom">0</b></div>
+      <div class="bincount"><i style="background:#9b8ac9"></i>女儿 <b id="c-daughter">0</b></div>
+      <div class="bincount"><i style="background:#7fb8a4"></i>儿子 <b id="c-son">0</b></div>
+    </div>
     <div id="eyepanel">
-      <div class="eyelabel">机器人视角 · 关键点检测</div>
+      <div class="eyelabel">机器人视角 · 种类识别 + 关键点检测</div>
       <canvas id="inset" width="320" height="320"></canvas>
     </div>
-    <p class="note">A=肩点 · B=中点 · C=下摆点 —— 全部来自俯视相机的实时检测，不是写死的坐标。每次「再叠一件」衣服都会随机换色、换位置、换角度。</p>
+    <p class="note">俯视相机先识别是 T 恤还是裤子，再检测关键点：量肩宽/腰宽判断是爸爸、妈妈、女儿还是儿子的衣服，叠好后放入对应的衣箱。「连续分拣」会一件接一件自动处理。</p>
   </aside>
 </div>
 <script type="module" src="app.js"></script>

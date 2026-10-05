@@ -1,5 +1,5 @@
 // Node 单测: 合成 T 恤(旋转 15°)上的关键点检测
-import { segmentShirt, findKeypoints } from './vision.js';
+import { segmentShirt, findKeypoints, findKeypointsPants, detectKind } from './vision.js';
 
 const W = 320, H = 320, CX = 160, CY = 160;
 // T 恤多边形 (y 朝下,未旋转时)
@@ -92,4 +92,38 @@ const sym = (L, R, name) => {
   console.log(`  ${name}: mirror-symmetric ok`);
 };
 sym(kp.sleeveL, kp.sleeveR, 'sleeves'); sym(kp.hemL, kp.hemR, 'hem');
+console.log('vision: shirt PASS');
+
+// ---------- 裤子 ----------
+console.log('vision: 15° rotated pants');
+const P = { waistHW: 48, waistH: 26, legLen: 170, gap: 7, crotchDrop: 12 };
+const pTop = CY - (P.waistH + P.legLen) / 2, pWaistBot = pTop + P.waistH;
+const pCrotchY = pWaistBot + P.crotchDrop, pBot = CY + (P.waistH + P.legLen) / 2;
+const pantsPoly = [
+  [-P.waistHW, pTop], [P.waistHW, pTop], [P.waistHW, pWaistBot], [P.waistHW, pBot],
+  [P.gap, pBot], [P.gap, pCrotchY], [-P.gap, pCrotchY], [-P.gap, pBot],
+  [-P.waistHW, pBot], [-P.waistHW, pWaistBot],
+].map(([x, y]) => [x + CX, y]);
+const rpantsPoly = pantsPoly.map(rot);
+const pdata = new Uint8ClampedArray(W * H * 4);
+for (let y = 0; y < H; y++) {
+  for (let x = 0; x < W; x++) {
+    const c = inPoly(x + 0.5, y + 0.5, rpantsPoly) ? SHIRT : TABLE;
+    const i = (y * W + x) * 4;
+    pdata[i] = c.r; pdata[i + 1] = c.g; pdata[i + 2] = c.b; pdata[i + 3] = 255;
+  }
+}
+const pmask = segmentShirt({ width: W, height: H, data: pdata }, SHIRT);
+if (detectKind(pmask, W, H) !== 'pants') throw new Error('detectKind(pants) != pants');
+console.log('  detectKind: pants ok');
+if (detectKind(mask, W, H) !== 'shirt') throw new Error('detectKind(shirt) != shirt');
+console.log('  detectKind: shirt ok');
+const pkp = findKeypointsPants(pmask, W, H);
+if (!pkp) throw new Error('findKeypointsPants returned null');
+close(pkp.waistL, rot([CX - P.waistHW, pTop]), 7, 'waistL');
+close(pkp.waistR, rot([CX + P.waistHW, pTop]), 7, 'waistR');
+close(pkp.cuffL, rot([CX - P.waistHW, pBot]), 8, 'cuffL');
+close(pkp.cuffR, rot([CX + P.waistHW, pBot]), 8, 'cuffR');
+close(pkp.crotch, rot([CX, pCrotchY]), 10, 'crotch');
+console.log('vision: pants PASS');
 console.log('vision: PASS');

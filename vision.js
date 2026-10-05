@@ -7,7 +7,7 @@ function colorDist2(data, i, r, g, b) {
 }
 
 /** 按衣服主体色分割; 返回 Uint8 二值 mask(1=衣服) */
-export function segmentShirt(img, rgb, thresh = 70) {
+export function segmentShirt(img, rgb, thresh = 85) {
   const { width: w, height: h, data } = img;
   const t2 = thresh * thresh;
   const mask = new Uint8Array(w * h);
@@ -188,4 +188,108 @@ export function findKeypoints(mask, w, h) {
     neckDip: neckDip ? { x: neckDip.x, y: neckDip.y } : null,
     A, B, C, contour, w, h,
   };
+}
+
+/**
+ * 裤子关键点检测。裤子凸包 ~= {左右腰角, 左右裤脚}, 裆部是中央最深的凹点。
+ * 返回像素坐标 {waistL, waistR, crotch, cuffL, cuffR, contour, w, h}
+ */
+export function findKeypointsPants(mask, w, h) {
+  const contour = outerBoundary(mask, w, h);
+  if (contour.length < 20) return null;
+  const hull = convexHull(contour);
+  // 四角: 对角极值
+  const waistL = argExtreme(contour, (x, y) => x + y, true);
+  const waistR = argExtreme(contour, (x, y) => (w - 1 - x) + y, true);
+  const cuffL = argExtreme(contour, (x, y) => x + (h - 1 - y), true);
+  const cuffR = argExtreme(contour, (x, y) => (w - 1 - x) + (h - 1 - y), true);
+  if (!waistL || !waistR || !cuffL || !cuffR) return null;
+  const cx = (waistL[0] + waistR[0]) / 2;
+  const waistW = Math.abs(waistR[0] - waistL[0]);
+  const waistTopY = Math.min(waistL[1], waistR[1]);
+  // 裆顶: 中央区域、腰线下方, y 最小 (最高) 的深凹点 = 裤腿槽的顶端
+  let crotchPt = null;
+  for (const [x, y] of contour) {
+    if (Math.abs(x - cx) > waistW * 0.3 || y < waistTopY + 8) continue;
+    let m = 1e9;
+    for (let i = 0; i < hull.length; i++) {
+      const a = hull[i], b = hull[(i + 1) % hull.length];
+      const d = segDist(x, y, a[0], a[1], b[0], b[1]);
+      if (d < m) m = d;
+    }
+    if (m > 10 && (!crotchPt || y < crotchPt[1])) crotchPt = [x, y];
+  }
+  if (!crotchPt) return null;
+  const crotch = { x: crotchPt[0], y: crotchPt[1] };
+  const P = (q) => ({ x: q[0], y: q[1] });
+  return {
+    waistL: P(waistL), waistR: P(waistR),
+    crotch,
+    cuffL: P(cuffL), cuffR: P(cuffR),
+    contour, w, h,
+  };
+}
+
+/** 輪廓点中使 fn 最小(或最大)的点 */
+function argExtreme(contour, fn, findMin = true) {
+  let best = null, bestV = findMin ? 1e18 : -1e18;
+  for (const [x, y] of contour) {
+    const v = fn(x, y);
+    if ((findMin && v < bestV) || (!findMin && v > bestV)) { bestV = v; best = [x, y]; }
+  }
+  return best;
+}
+
+/** 填充内部空洞 (与边界不连通的背景)；裆槽开口朝外，不会被填 */
+function fillHoles(mask, w, h) {
+  const seen = new Uint8Array(w * h);
+  const stack = [];
+  for (let x = 0; x < w; x++) { stack.push(x, (h - 1) * w + x); }
+  for (let y = 0; y < h; y++) { stack.push(y * w, y * w + w - 1); }
+  while (stack.length) {
+    const i = stack.pop();
+    if (seen[i] || mask[i]) continue;
+    seen[i] = 1;
+    const x = i % w, y = (i / w) | 0;
+    if (x > 0) stack.push(i - 1); if (x < w - 1) stack.push(i + 1);
+    if (y > 0) stack.push(i - w); if (y < h - 1) stack.push(i + w);
+  }
+  const out = new Uint8Array(w * h);
+  for (let i = 0; i < w * h; i++) out[i] = mask[i] || !seen[i] ? 1 : 0;
+  return out;
+}
+
+/**
+ * 衣服种类识别: 在衣服下半部逐行扫, 裤子的裆槽是深而连续的纵向缺口
+ * (多条水平线都被分成左右两段), T 恤下摆连续。返回 'pants' | 'shirt' | null
+ */
+export function detectKind(mask, w, h) {
+  const fm = fillHoles(mask, w, h); // 填掉衣服图案造成的内洞; 裆槽开口朝外, 不受影响
+  let minY = h, maxY = 0, sumY = 0, n = 0;
+  for (let y = 0; y < h; y++)
+    for (let x = 0; x < w; x++)
+      if (fm[y * w + x]) { sumY += y; n++; if (y < minY) minY = y; if (y > maxY) maxY = y; }
+  if (n < 100) return null;
+  const cy = sumY / n, spanY = Math.max(1, maxY - minY);
+  let gapLines = 0;
+  // 从上往下扫中部和下半部 (短裤的裆槽在中上部, 长裤的槽深达下半部)
+  for (let y = Math.round(minY + spanY * 0.25); y <= maxY; y += 3) {
+    let gx0 = w, gx1 = 0;
+    for (let x = 0; x < w; x++) if (fm[y * w + x]) { if (x < gx0) gx0 = x; if (x > gx1) gx1 = x; }
+    if (gx1 <= gx0) continue;
+    const gcx = (gx0 + gx1) / 2, gw = gx1 - gx0;
+    const runs = [];
+    let start = -1;
+    for (let x = 0; x < w; x++) {
+      if (fm[y * w + x]) { if (start < 0) start = x; }
+      else if (start >= 0) { if (x - start > 4) runs.push([start, x]); start = -1; }
+    }
+    if (start >= 0 && w - start > 4) runs.push([start, w]);
+    for (let i = 1; i < runs.length; i++) {
+      const gapC = (runs[i][0] + runs[i - 1][1]) / 2;
+      if (runs[i][0] - runs[i - 1][1] > 5 && Math.abs(gapC - gcx) < gw * 0.25) { gapLines++; break; }
+    }
+  }
+  // 裆槽纵深超过衣服高度 20% -> 裤子 (袖子旋转伪影只有几个像素深)
+  return (gapLines * 3 > spanY * 0.20) ? 'pants' : 'shirt';
 }

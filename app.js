@@ -1,20 +1,18 @@
-// app.js — FoldBot 虚拟叠衣机器人 (Three.js)
-// 流程: A·感知(俯视相机 + vision.js 关键点检测) -> B·翻折(沿 ABC 线) -> C·对折
+// app.js — FoldBot: 叠衣 + 按家人分拣 (爸爸/妈妈/女儿/儿子)
+// 流程: 感知(种类识别+关键点) -> 折叠 -> 抓取归位到衣箱
 import * as THREE from 'three';
 import { ik } from './kinematics.js';
 import { sideOfLine, foldPointVert, easeInOutCubic } from './fold.js';
-import { segmentShirt, findKeypoints } from './vision.js';
-import { planFolds } from './planner.js';
+import { segmentShirt, findKeypoints, findKeypointsPants, detectKind } from './vision.js';
+import { planFolds, planPantsFolds, classifyOwner, detectPantsLength } from './planner.js';
+import { buildGarmentMesh, disposeGarmentMesh, OWNERS, OWNER_KEYS, KINDS, pantsFoldMode } from './garments.js';
 
-// ---------- 常量 ----------
 const L1 = 0.72, L2 = 0.66, SHOULDER_H = 0.22;
-const TOOL_DROP = 0.17; // 腕点到指尖的垂直距离 (夹爪竖直朝下)
+const TOOL_DROP = 0.17;
 const ARM_L_BASE = { x: -0.78, z: 0.62 }, ARM_R_BASE = { x: 0.78, z: 0.62 };
 const HOME_L = { x: -0.45, y: 0.55, z: 0.35 }, HOME_R = { x: 0.45, y: 0.55, z: 0.35 };
-const CAP = 320, CAP_S = 1.75; // 俯视相机分辨率 / 视野边长(世界单位)
-const SHIRT_W = 1.24, SHIRT_H = 1.0;
+const CAP = 320, CAP_S = 1.75;
 
-// ---------- 渲染器 / 场景 ----------
 const canvas = document.getElementById('scene');
 const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -51,108 +49,88 @@ scene.add(fill);
   );
   ground.rotation.x = -Math.PI / 2; ground.position.y = -0.62; ground.receiveShadow = true;
   scene.add(ground);
-  const wood = new THREE.MeshStandardMaterial({ color: 0xcfa878, roughness: 0.75 });
+  const wood = new THREE.MeshStandardMaterial({ color: 0x6b4a2f, roughness: 0.75 });
   const top = new THREE.Mesh(new THREE.BoxGeometry(2.8, 0.1, 2.2), wood);
   top.position.y = -0.05; top.castShadow = top.receiveShadow = true; scene.add(top);
   const legG = new THREE.CylinderGeometry(0.05, 0.05, 0.52, 12);
-  const legM = new THREE.MeshStandardMaterial({ color: 0xb08d5f, roughness: 0.8 });
+  const legM = new THREE.MeshStandardMaterial({ color: 0x4e3520, roughness: 0.8 });
   for (const [lx, lz] of [[-1.25, -0.95], [1.25, -0.95], [-1.25, 0.95], [1.25, 0.95]]) {
     const leg = new THREE.Mesh(legG, legM);
     leg.position.set(lx, -0.36, lz); leg.castShadow = true; scene.add(leg);
   }
 }
 
-// ---------- T 恤纹理 ----------
-const PASTELS = [
-  { h: 340, rgb: { r: 255, g: 217, b: 232 } }, // 粉
-  { h: 150, rgb: { r: 191, g: 232, b: 210 } }, // 薄荷
-  { h: 205, rgb: { r: 191, g: 222, b: 245 } }, // 天空
-  { h: 270, rgb: { r: 221, g: 207, b: 240 } }, // 薰衣草
-  { h: 40, rgb: { r: 250, g: 235, b: 200 } },  // 奶油
-];
-const TEX_W = 1024, TEX_H = 832;
-const TX = (sx) => ((sx + 0.62) / SHIRT_W) * TEX_W;
-const TY = (sy) => (0.5 - sy) * TEX_H;
-
-function drawShirt(hue) {
-  const c = document.createElement('canvas'); c.width = TEX_W; c.height = TEX_H;
+// ---------- 四个衣箱 ----------
+const BINS = {
+  dad: { x: -1.12, z: -0.25 },
+  mom: { x: -1.12, z: 0.50 },
+  daughter: { x: 1.12, z: -0.25 },
+  son: { x: 1.12, z: 0.50 },
+};
+const binCounts = { dad: 0, mom: 0, daughter: 0, son: 0 };
+const placedMeshes = [];
+function makeBinLabel(text, colorHex) {
+  const c = document.createElement('canvas'); c.width = 256; c.height = 96;
   const x = c.getContext('2d');
-  const base = `hsl(${hue},65%,80%)`, dark = `hsl(${hue},55%,64%)`, deep = `hsl(${hue},50%,52%)`;
-  x.fillStyle = base;
-  const rect = (x0, x1, y0, y1) => { x.beginPath(); x.rect(TX(x0), TY(y1), TX(x1) - TX(x0), TY(y0) - TY(y1)); x.fill(); };
-  rect(-0.42, 0.42, -0.31, 0.31);       // 身体
-  rect(-0.62, -0.42, 0.03, 0.27);       // 左袖
-  rect(0.42, 0.62, 0.03, 0.27);         // 右袖
-  // 袖缝线
-  x.strokeStyle = dark; x.lineWidth = 4;
-  for (const sx of [-0.42, 0.42]) { x.beginPath(); x.moveTo(TX(sx), TY(0.27)); x.lineTo(TX(sx), TY(0.03)); x.stroke(); }
-  // 领口罗纹 (带一点凹陷, 真实衣物既视感)
-  x.strokeStyle = dark; x.lineWidth = 15; x.lineCap = 'round';
-  x.beginPath(); x.moveTo(TX(-0.14), TY(0.305)); x.quadraticCurveTo(TX(0), TY(0.235), TX(0.14), TY(0.305)); x.stroke();
-  x.strokeStyle = deep; x.lineWidth = 4;
-  x.beginPath(); x.moveTo(TX(-0.14), TY(0.305)); x.quadraticCurveTo(TX(0), TY(0.235), TX(0.14), TY(0.305)); x.stroke();
-  // 胸口小机器人图案
-  const cx = TX(0), cyy = TY(0.03), s = TEX_W / SHIRT_W; // s: 每世界单位像素数
-  x.fillStyle = dark;
-  x.beginPath(); x.roundRect(cx - 0.085 * s, cyy - 0.065 * s, 0.17 * s, 0.13 * s, 0.04 * s); x.fill();
-  x.strokeStyle = deep; x.lineWidth = 5;
-  x.beginPath(); x.moveTo(cx, cyy - 0.065 * s); x.lineTo(cx, cyy - 0.10 * s); x.stroke();
-  x.fillStyle = deep; x.beginPath(); x.arc(cx, cyy - 0.11 * s, 0.012 * s, 0, 7); x.fill();
-  x.fillStyle = '#fff';
-  x.beginPath(); x.arc(cx - 0.035 * s, cyy - 0.01 * s, 0.020 * s, 0, 7); x.fill();
-  x.beginPath(); x.arc(cx + 0.035 * s, cyy - 0.01 * s, 0.020 * s, 0, 7); x.fill();
-  x.fillStyle = '#334';
-  x.beginPath(); x.arc(cx - 0.035 * s, cyy - 0.01 * s, 0.009 * s, 0, 7); x.fill();
-  x.beginPath(); x.arc(cx + 0.035 * s, cyy - 0.01 * s, 0.009 * s, 0, 7); x.fill();
-  x.strokeStyle = '#334'; x.lineWidth = 4;
-  x.beginPath(); x.arc(cx, cyy + 0.015 * s, 0.025 * s, 0.3, Math.PI - 0.3); x.stroke();
-  // 柔和明暗
-  const grad = x.createLinearGradient(0, 0, 0, TEX_H);
-  grad.addColorStop(0, 'rgba(255,255,255,0.10)'); grad.addColorStop(1, 'rgba(0,0,0,0.05)');
-  x.fillStyle = grad; x.fillRect(0, 0, TEX_W, TEX_H);
-  const tex = new THREE.CanvasTexture(c);
-  tex.colorSpace = THREE.SRGBColorSpace;
-  tex.anisotropy = 4;
-  return tex;
+  x.fillStyle = 'rgba(255,255,255,0.94)';
+  x.beginPath(); x.roundRect(6, 6, 244, 84, 22); x.fill();
+  x.fillStyle = colorHex; x.font = 'bold 50px sans-serif';
+  x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillText(text, 128, 52);
+  const tex = new THREE.CanvasTexture(c); tex.colorSpace = THREE.SRGBColorSpace;
+  const sp = new THREE.Sprite(new THREE.SpriteMaterial({ map: tex, transparent: true, depthTest: false }));
+  sp.scale.set(0.42, 0.1575, 1); sp.renderOrder = 10;
+  return sp;
 }
-
-// ---------- T 恤网格 (随机摆放, 烘焙到顶点) ----------
-let shirt = null; // {mesh, base:Float32Array, cx, cz, rgb}
-function buildShirt() {
-  if (shirt) { scene.remove(shirt.mesh); shirt.mesh.geometry.dispose(); shirt.mesh.material.map.dispose(); shirt.mesh.material.dispose(); }
-  const pastel = PASTELS[(Math.random() * PASTELS.length) | 0];
-  const geo = new THREE.PlaneGeometry(SHIRT_W, SHIRT_H, 56, 44);
-  const pos = geo.attributes.position;
-  const yaw = (Math.random() - 0.5) * 0.7, ox = (Math.random() - 0.5) * 0.3, oz = (Math.random() - 0.5) * 0.2;
-  const cy = Math.cos(yaw), sy2 = Math.sin(yaw);
-  for (let i = 0; i < pos.count; i++) {
-    const sx = pos.getX(i), syv = pos.getY(i); // syv: 衫上方向
-    const px = sx, pz = -syv;
-    pos.setXYZ(i, ox + px * cy + pz * sy2, 0.002, oz - px * sy2 + pz * cy);
+function buildBins() {
+  for (const owner of OWNER_KEYS) {
+    const { x, z } = BINS[owner];
+    const color = OWNERS[owner].binColor;
+    const hex = '#' + new THREE.Color(color).getHexString();
+    const g = new THREE.Group();
+    const mat = new THREE.MeshStandardMaterial({ color, roughness: 0.65 });
+    const base = new THREE.Mesh(new THREE.BoxGeometry(0.5, 0.03, 0.42), mat);
+    base.position.y = 0.015; g.add(base);
+    const wallH = 0.14, t = 0.02;
+    const mkWall = (w, d, px, pz) => {
+      const m = new THREE.Mesh(new THREE.BoxGeometry(w, wallH, d), mat);
+      m.position.set(px, 0.03 + wallH / 2, pz); g.add(m);
+    };
+    mkWall(0.5, t, 0, -0.21 + t / 2); mkWall(0.5, t, 0, 0.21 - t / 2);
+    mkWall(t, 0.42, -0.25 + t / 2, 0); mkWall(t, 0.42, 0.25 - t / 2, 0);
+    g.position.set(x, 0, z);
+    g.traverse((o) => { if (o.isMesh) { o.castShadow = true; o.receiveShadow = true; } });
+    scene.add(g);
+    const label = makeBinLabel(OWNERS[owner].label, hex);
+    label.position.set(x, 0.42, z);
+    scene.add(label);
   }
-  geo.computeVertexNormals();
-  const mat = new THREE.MeshStandardMaterial({
-    map: drawShirt(pastel.h), transparent: true, alphaTest: 0.45,
-    side: THREE.DoubleSide, roughness: 0.9, metalness: 0,
-  });
-  const mesh = new THREE.Mesh(geo, mat);
-  mesh.castShadow = mesh.receiveShadow = true;
-  scene.add(mesh);
-  shirt = { mesh, base: new Float32Array(pos.array), cx: ox, cz: oz, rgb: pastel.rgb, yaw };
+}
+buildBins();
+
+// ---------- 衣服 ----------
+let garment = null; // {mesh, base, W, H, kind, kindKey, owner, rgb, yaw, ox, oz}
+let currentKindKey = 'random';
+function nextGarment() {
+  if (garment) { scene.remove(garment.mesh); disposeGarmentMesh(garment); }
+  garment = buildGarmentMesh(currentKindKey, 'random');
+  scene.add(garment.mesh);
+  foldEngine.reset(); hideMarkers(); plan = null;
+  const x = inset.getContext('2d'); x.clearRect(0, 0, inset.width, inset.height);
 }
 
 // ---------- 折叠引擎 ----------
 const foldEngine = {
-  active: null, // {px,pz,dx,dz,foldSign,axisH,duration,t,snapshot}
-  index: 0,
-  start(p) {
-    this.active = { ...p, t: 0, snapshot: new Float32Array(shirt.mesh.geometry.attributes.position.array) };
+  active: null, mesh: null, garment: null, index: 0,
+  start(p, g) {
+    this.garment = g; this.mesh = g.mesh;
+    this.active = { ...p, t: 0, snapshot: new Float32Array(this.mesh.geometry.attributes.position.array) };
   },
   update(dt) {
     const f = this.active; if (!f) return false;
     f.t += dt / f.duration;
     const e = easeInOutCubic(Math.min(f.t, 1));
-    const pos = shirt.mesh.geometry.attributes.position, snap = f.snapshot;
+    const pos = this.mesh.geometry.attributes.position, snap = f.snapshot;
     for (let i = 0; i < pos.count; i++) {
       const ix = i * 3;
       const x = snap[ix], y = snap[ix + 1], z = snap[ix + 2];
@@ -162,15 +140,14 @@ const foldEngine = {
       } else pos.setXYZ(i, x, y, z);
     }
     pos.needsUpdate = true;
-    shirt.mesh.geometry.computeVertexNormals();
-    if (f.t >= 1) { // 烘焙
-      shirt.base = new Float32Array(pos.array);
+    this.mesh.geometry.computeVertexNormals();
+    if (f.t >= 1) {
+      this.garment.base = new Float32Array(pos.array);
       this.active = null; this.index++;
-      return true; // 刚完成
+      return true;
     }
     return false;
   },
-  /** 当前(未完成)折叠下某点的实时位置, 供机械臂跟踪抓取点 */
   pointNow(x, y, z) {
     const f = this.active; if (!f) return { x, y, z };
     const e = easeInOutCubic(Math.min(f.t, 1));
@@ -178,15 +155,13 @@ const foldEngine = {
       return foldPointVert(f.px, f.pz, f.dx, f.dz, f.axisH, f.foldSign, e, x, y, z);
     return { x, y, z };
   },
-  reset() { this.active = null; this.index = 0; },
+  reset() { this.active = null; this.mesh = null; this.garment = null; this.index = 0; },
 };
 
 // ---------- 双臂机器人 ----------
 const WHITE = new THREE.MeshStandardMaterial({ color: 0xf5f5f7, roughness: 0.5, metalness: 0.1 });
 const DARK = new THREE.MeshStandardMaterial({ color: 0x2b2b33, roughness: 0.6 });
-
 function shadowed(m) { m.castShadow = true; return m; }
-
 function makeArm(bx, bz, accentColor) {
   const accent = new THREE.MeshStandardMaterial({ color: accentColor, roughness: 0.45, metalness: 0.15 });
   const g = new THREE.Group(); g.position.set(bx, 0, bz);
@@ -194,7 +169,6 @@ function makeArm(bx, bz, accentColor) {
   base.position.y = 0.05; g.add(base);
   const col = shadowed(new THREE.Mesh(new THREE.CylinderGeometry(0.055, 0.068, 0.14, 20), WHITE));
   col.position.y = 0.15; g.add(col);
-  // 脸: 两只眼睛朝向桌子 (-z)
   for (const ex of [-0.024, 0.024]) {
     const eye = new THREE.Mesh(new THREE.SphereGeometry(0.013, 12, 10), DARK);
     eye.position.set(ex, 0.17, -0.055); g.add(eye);
@@ -210,7 +184,7 @@ function makeArm(bx, bz, accentColor) {
   fore.position.y = L2 / 2; elG.add(fore);
   const wrG = new THREE.Group(); wrG.position.y = L2; elG.add(wrG);
   wrG.add(shadowed(new THREE.Mesh(new THREE.SphereGeometry(0.034, 16, 12), accent)));
-  const tool = new THREE.Group(); wrG.add(tool); // 保持竖直
+  const tool = new THREE.Group(); wrG.add(tool);
   const palm = shadowed(new THREE.Mesh(new THREE.BoxGeometry(0.075, 0.035, 0.075), accent));
   palm.position.y = -0.055; tool.add(palm);
   const fingerG = new THREE.BoxGeometry(0.022, 0.1, 0.035);
@@ -222,22 +196,20 @@ function makeArm(bx, bz, accentColor) {
   scene.add(g);
   return { group: g, yawG, shG, elG, tool, fingerL, fingerR, bx, bz };
 }
-
 function setArmPose(arm, yaw, a1, a2, open) {
   arm.yawG.rotation.y = yaw;
   arm.shG.rotation.x = a1;
   arm.elG.rotation.x = a2;
-  arm.tool.rotation.x = -(a1 + a2); // 夹爪始终竖直朝下
+  arm.tool.rotation.x = -(a1 + a2);
   arm.fingerL.rotation.z = -open * 0.5;
   arm.fingerR.rotation.z = open * 0.5;
 }
 function armTo(arm, p, open) {
-  // p 为期望的指尖位置; IK 解的是腕点, 故上抬 TOOL_DROP
   const { yaw, a1, a2 } = ik(arm.bx, arm.bz, SHOULDER_H, L1, L2, p.x, p.y + TOOL_DROP, p.z);
   setArmPose(arm, yaw, a1, a2, open);
 }
-const armL = makeArm(ARM_L_BASE.x, ARM_L_BASE.z, 0xff8a5c); // 左臂·橙
-const armR = makeArm(ARM_R_BASE.x, ARM_R_BASE.z, 0x4aa8ff); // 右臂·蓝
+const armL = makeArm(ARM_L_BASE.x, ARM_L_BASE.z, 0xff8a5c);
+const armR = makeArm(ARM_R_BASE.x, ARM_R_BASE.z, 0x4aa8ff);
 armTo(armL, HOME_L, 0.7); armTo(armR, HOME_R, 0.7);
 
 // ---------- 关键点 3D 标记 ----------
@@ -253,137 +225,254 @@ function textSprite(text, color) {
   return sp;
 }
 const markers = {};
-for (const [k, label, color] of [['A', 'A', '#ff5252'], ['B', 'B', '#ff9f1c'], ['C', 'C', '#3a86ff']]) {
-  const sp = textSprite(label, color); sp.visible = false; scene.add(sp); markers[k] = sp;
+function showMarkers() {
+  hideMarkers();
+  for (const m of plan.markers) {
+    const sp = textSprite(m.label, m.color);
+    sp.position.set(m.p.x, 0.06, m.p.z);
+    scene.add(sp);
+    if (markers[m.key]) scene.remove(markers[m.key]);
+    markers[m.key] = sp;
+  }
 }
-function showMarker(k, p) { markers[k].position.set(p.x, 0.06, p.z); markers[k].visible = true; }
 function hideMarkers() { for (const k in markers) markers[k].visible = false; }
 
-// ---------- 俯视相机抓拍 + 关键点检测 ----------
+// ---------- 俯视相机抓拍 ----------
 const capCam = new THREE.OrthographicCamera(-CAP_S / 2, CAP_S / 2, CAP_S / 2, -CAP_S / 2, 0.1, 10);
 capCam.up.set(0, 0, -1);
 const capTarget = new THREE.WebGLRenderTarget(CAP, CAP);
+capTarget.texture.colorSpace = THREE.SRGBColorSpace; // 让抓拍输出 sRGB, 与分割参考色一致
 const px2w = (px, py) => ({
-  x: shirt.cx + (px / CAP - 0.5) * CAP_S,
-  z: shirt.cz + (py / CAP - 0.5) * CAP_S,
+  x: garment.ox + (px / CAP - 0.5) * CAP_S,
+  z: garment.oz + (py / CAP - 0.5) * CAP_S,
 });
 const w2px = (x, z) => ({
-  x: (x - shirt.cx) / CAP_S * CAP + CAP / 2,
-  y: (z - shirt.cz) / CAP_S * CAP + CAP / 2,
+  x: (x - garment.ox) / CAP_S * CAP + CAP / 2,
+  y: (z - garment.oz) / CAP_S * CAP + CAP / 2,
 });
-
 function captureTopDown() {
   armL.group.visible = armR.group.visible = false;
   hideMarkers();
-  capCam.position.set(shirt.cx, 6, shirt.cz);
-  capCam.lookAt(shirt.cx, 0, shirt.cz);
+  const hidden = [];
+  scene.traverse((o) => { if (o.isSprite) { hidden.push(o); o.visible = false; } });
+  capCam.position.set(garment.ox, 6, garment.oz);
+  capCam.lookAt(garment.ox, 0, garment.oz);
   renderer.setRenderTarget(capTarget);
   renderer.render(scene, capCam);
   const buf = new Uint8Array(CAP * CAP * 4);
   renderer.readRenderTargetPixels(capTarget, 0, 0, CAP, CAP, buf);
   renderer.setRenderTarget(null);
   armL.group.visible = armR.group.visible = true;
-  const data = new Uint8ClampedArray(CAP * CAP * 4); // WebGL 行 0 在底部 -> 翻转为 y 朝下
+  hidden.forEach((o) => { o.visible = true; });
+  const data = new Uint8ClampedArray(CAP * CAP * 4);
   for (let y = 0; y < CAP; y++) data.set(buf.subarray((CAP - 1 - y) * CAP * 4, (CAP - y) * CAP * 4), y * CAP * 4);
   return { width: CAP, height: CAP, data };
 }
 
-// 检测结果 (世界坐标) + 规划
+// ---------- 感知 + 规划 ----------
 let plan = null;
 function detectAndPlan() {
   const img = captureTopDown();
-  const mask = segmentShirt(img, shirt.rgb, 70);
-  let kp = findKeypoints(mask, CAP, CAP);
-  if (!kp) { // 兜底: 几何默认 (不应发生)
-    const d = 90;
-    kp = {
-      sleeveL: { x: CAP / 2 - d, y: CAP / 2 - 40 }, sleeveR: { x: CAP / 2 + d, y: CAP / 2 - 40 },
-      shoulderL: { x: CAP / 2 - d, y: CAP / 2 - 60 }, shoulderR: { x: CAP / 2 + d, y: CAP / 2 - 60 },
-      hemL: { x: CAP / 2 - d, y: CAP / 2 + 60 }, hemR: { x: CAP / 2 + d, y: CAP / 2 + 60 },
-      A: { x: CAP / 2 - d / 2, y: CAP / 2 - 60 }, B: null, C: null, contour: [],
+  const mask = segmentShirt(img, garment.rgb, 85);
+  const kind = detectKind(mask, CAP, CAP) || 'shirt';
+  const W = (p) => ({ ...px2w(p.x, p.y), y: 0.002 });
+  let kp, kw, folds, markers, cls, owner, up, right, kindLabel = KINDS[garment.kindKey].label;
+  if (kind === 'shirt') {
+    kp = findKeypoints(mask, CAP, CAP);
+    if (!kp) { // 兜底
+      const d = 90, c = CAP / 2;
+      kp = {
+        sleeveL: { x: c - d, y: c - 40 }, sleeveR: { x: c + d, y: c - 40 },
+        shoulderL: { x: c - d, y: c - 60 }, shoulderR: { x: c + d, y: c - 60 },
+        hemL: { x: c - d, y: c + 60 }, hemR: { x: c + d, y: c + 60 },
+        A: { x: c - d / 2, y: c - 60 }, B: null, C: null, contour: [],
+      };
+      kp.C = { x: kp.A.x, y: kp.A.y + 120 }; kp.B = { x: kp.A.x, y: kp.A.y + 60 };
+    }
+    kw = {
+      A: W(kp.A), B: W(kp.B), C: W(kp.C),
+      sleeveL: W(kp.sleeveL), sleeveR: W(kp.sleeveR),
+      hemL: W(kp.hemL), hemR: W(kp.hemR),
+      shoulderL: W(kp.shoulderL), shoulderR: W(kp.shoulderR),
     };
-    kp.C = { x: kp.A.x, y: kp.A.y + 120 }; kp.B = { x: kp.A.x, y: kp.A.y + 60 };
+    cls = classifyOwner('shirt', kw);
+    owner = cls.owner;
+    const pf = planFolds(kw);
+    folds = pf.folds; up = pf.up; right = pf.right;
+    markers = [
+      { key: 'A', label: 'A', color: '#ff5252', p: kw.A },
+      { key: 'B', label: 'B', color: '#ff9f1c', p: kw.B },
+      { key: 'C', label: 'C', color: '#3a86ff', p: kw.C },
+    ];
+  } else {
+    kp = findKeypointsPants(mask, CAP, CAP);
+    if (!kp) {
+      const d = 70, c = CAP / 2;
+      kp = {
+        waistL: { x: c - d, y: c - 80 }, waistR: { x: c + d, y: c - 80 },
+        crotch: { x: c, y: c - 40 },
+        cuffL: { x: c - d, y: c + 80 }, cuffR: { x: c + d, y: c + 80 },
+        contour: [],
+      };
+    }
+    kw = {
+      waistL: W(kp.waistL), waistR: W(kp.waistR), crotch: W(kp.crotch),
+      cuffL: W(kp.cuffL), cuffR: W(kp.cuffR),
+    };
+    cls = classifyOwner('pants', kw);
+    owner = cls.owner;
+    const length = detectPantsLength(kw);
+    const mode = pantsFoldMode(owner, length);
+    const pf = planPantsFolds(kw, mode);
+    folds = pf.folds; up = pf.up; right = pf.right;
+    kindLabel = length === 'long' ? '长裤' : '短裤';
+    const waistC = { x: (kw.waistL.x + kw.waistR.x) / 2, y: 0.002, z: (kw.waistL.z + kw.waistR.z) / 2 };
+    const cuffC = { x: (kw.cuffL.x + kw.cuffR.x) / 2, y: 0.002, z: (kw.cuffL.z + kw.cuffR.z) / 2 };
+    markers = [
+      { key: 'crotch', label: '裆', color: '#ff5252', p: kw.crotch },
+      { key: 'waist', label: '腰', color: '#3a86ff', p: waistC },
+      { key: 'cuff', label: '脚', color: '#ff9f1c', p: cuffC },
+    ];
   }
-  const W = (p) => ({ ...px2w(p.x, p.y), y: 0.002 }); // 布面高度
-  const kw = {
-    A: W(kp.A), B: W(kp.B), C: W(kp.C),
-    sleeveL: W(kp.sleeveL), sleeveR: W(kp.sleeveR),
-    hemL: W(kp.hemL), hemR: W(kp.hemR),
-    shoulderL: W(kp.shoulderL), shoulderR: W(kp.shoulderR),
-  };
-  const pf = planFolds(kw);
-  plan = { kp, img, ...kw, ...pf };
+  plan = { kind, kindLabel, owner, cls, folds, markers, up, right, kp, img, kw };
   return plan;
 }
 
 // ---------- 时间线 ----------
-const TL = { state: 'idle', t: 0, running: false, timeScale: 1, foldStarted: false };
-const DUR = { detecting: 1.8, flipB: 3.6, foldC: 3.4 };
+const TL = { state: 'idle', t: 0, running: false, timeScale: 1, foldStarted: false, sortMode: false, foldIdx: 0 };
+const DUR = { detecting: 1.8 };
 const seg01 = (t, a, b) => { const s = Math.min(1, Math.max(0, (t - a) / (b - a))); return easeInOutCubic(s); };
 const lerp = (a, b, s) => a + (b - a) * s;
 const lerp3 = (a, b, s) => ({ x: lerp(a.x, b.x, s), y: lerp(a.y, b.y, s), z: lerp(a.z, b.z, s) });
 
 const statusEl = document.getElementById('status');
-const pills = { A: document.getElementById('stepA'), B: document.getElementById('stepB'), C: document.getElementById('stepC') };
-function setPills(active) {
-  const order = ['A', 'B', 'C'];
-  for (const k of order) {
-    pills[k].classList.remove('active', 'done');
-    if (k === active) pills[k].classList.add('active');
-    else if (order.indexOf(k) < order.indexOf(active)) pills[k].classList.add('done');
-  }
-  if (active === 'done') order.forEach((k) => pills[k].classList.add('done'));
+const stepsEl = document.getElementById('steps');
+let pillEls = [];
+function buildPills() {
+  stepsEl.innerHTML = ''; pillEls = [];
+  const labels = ['A·感知', ...plan.folds.map((f) => f.label), '归位'];
+  labels.forEach((lb, i) => {
+    const d = document.createElement('div');
+    d.className = 'pill'; d.innerHTML = `<b>${'ABCDE'[i] || '·'}</b>${lb.replace(/^[A-Z]·/, '')}`;
+    stepsEl.appendChild(d); pillEls.push(d);
+  });
+}
+function setPills(idx) {
+  pillEls.forEach((el, i) => {
+    el.classList.remove('active', 'done');
+    if (idx === 'done' || i < idx) el.classList.add('done');
+    else if (i === idx) el.classList.add('active');
+  });
 }
 function setStatus(t) { statusEl.textContent = t; }
 
 function setState(s) {
-  TL.state = s; TL.t = 0; TL.foldStarted = false; TL.entered = false;
-  if (s === 'detecting') { setPills('A'); setStatus('A·感知 — 俯视相机检测关键点…'); }
-  if (s === 'flipB') { setPills('B'); setStatus('B·翻折 — 左臂抓袖口, 沿 ABC 线翻折'); }
-  if (s === 'foldC') { setPills('C'); setStatus('C·对折 — 右臂抓下摆, 上翻对折'); }
-  if (s === 'done') { setPills('done'); setStatus('叠好啦! ✨'); burstConfetti(); }
-  if (s === 'idle') { setPills(null); setStatus('点击「播放」开始叠衣'); }
-}
-
-// B步每帧摆臂 (左臂抓袖口翻折, 右臂按住 C 点固定折痕)
-function poseFlipB(t) {
-  const tip = plan.grabTip, press = plan.pressC;
-  const aboveTip = { ...tip, y: tip.y + 0.16 }, abovePress = { ...press, y: press.y + 0.16 };
-  const grabPos = { ...tip, y: tip.y + 0.03 };
-  let lPos, lOpen, rPos, rOpen;
-  if (t < 1.0) { const s = seg01(t, 0, 1.0); lPos = lerp3(HOME_L, aboveTip, s); lOpen = 0.7; rPos = lerp3(HOME_R, abovePress, s); rOpen = 0.7; }
-  else if (t < 1.3) { const s = seg01(t, 1.0, 1.3); lPos = lerp3(aboveTip, grabPos, s); lOpen = lerp(0.7, 0.12, s); rPos = lerp3(abovePress, press, s); rOpen = lerp(0.7, 0.3, s); }
-  else {
-    if (!TL.foldStarted) { foldEngine.start(plan.fold1); TL.foldStarted = true; }
-    const tracked = foldEngine.pointNow(tip.x, tip.y, tip.z);
-    lPos = { x: tracked.x, y: tracked.y + 0.03, z: tracked.z }; lOpen = 0.12;
-    rPos = press; rOpen = 0.3;
-    if (t > 2.9) { const s = seg01(t, 2.9, 3.6); const up = { x: tracked.x, y: tracked.y + 0.35, z: tracked.z }; lPos = lerp3(lPos, up, s); lOpen = lerp(0.12, 0.7, s); rPos = lerp3(press, abovePress, s); }
+  TL.state = s; TL.t = 0; TL.foldStarted = false; TL.entered = false; TL.released = false;
+  if (s === 'detecting') { setPills(0); setStatus('A·感知 — 俯视相机识别种类、检测关键点…'); }
+  else if (s === 'fold') {
+    const i = TL.foldIdx, step = plan.folds[i];
+    setPills(1 + i); setStatus(`${'BCD'[i] || '·'}·${step.label}`); hideMarkers();
   }
-  armTo(armL, lPos, lOpen); armTo(armR, rPos, rOpen);
+  else if (s === 'placing') {
+    setPills(1 + plan.folds.length);
+    setStatus(`归位 — ${plan.kindLabel}·${plan.cls.metricName}${plan.cls.metric.toFixed(2)}，是「${OWNERS[plan.owner].label}」的`);
+    setupPlacing();
+  }
+  else if (s === 'done') {
+    setPills('done');
+    if (TL.sortMode) setStatus(`✓ 放入「${OWNERS[plan.owner].label}」的箱子`);
+    else { setStatus('叠好并分拣完成! ✨'); burstConfetti(); }
+  }
+  else if (s === 'idle') { setPills(-1); setStatus('选择衣服种类，点击「播放」开始'); }
 }
 
-// C步每帧摆臂
-function poseFoldC(t) {
-  const grab = plan.grabHem, press = plan.pressB;
+// 通用折叠摆臂: 抓臂跟踪布料到 75% 提前松手, 按臂固定折痕
+function poseFoldStep(t, step) {
+  const gArm = step.grabArm === 'L' ? armL : armR, pArm = step.pressArm === 'L' ? armL : armR;
+  const gHome = step.grabArm === 'L' ? HOME_L : HOME_R, pHome = step.pressArm === 'L' ? HOME_L : HOME_R;
+  const { grab, press, params } = step;
+  const dur = params.duration, relT = 1.3 + dur * 0.75, endT = 1.3 + dur + 0.8;
   const aboveGrab = { ...grab, y: grab.y + 0.16 }, abovePress = { ...press, y: press.y + 0.16 };
   const grabPos = { ...grab, y: grab.y + 0.03 };
-  let lPos, lOpen, rPos, rOpen;
-  if (t < 1.0) { const s = seg01(t, 0, 1.0); rPos = lerp3(HOME_R, aboveGrab, s); rOpen = 0.7; lPos = lerp3(HOME_L, abovePress, s); lOpen = 0.7; }
-  else if (t < 1.3) { const s = seg01(t, 1.0, 1.3); rPos = lerp3(aboveGrab, grabPos, s); rOpen = lerp(0.7, 0.12, s); lPos = lerp3(abovePress, press, s); lOpen = lerp(0.7, 0.3, s); }
-  else {
-    if (!TL.foldStarted) { foldEngine.start(plan.fold2); TL.foldStarted = true; }
-    const tracked = foldEngine.pointNow(grab.x, grab.y, grab.z);
-    rPos = { x: tracked.x, y: tracked.y + 0.03, z: tracked.z }; rOpen = 0.12;
-    lPos = press; lOpen = 0.3;
-    // C 点被布带着走, 标记跟随 (烘焙后停在最终位置)
-    if (foldEngine.active) {
-      const cp = foldEngine.pointNow(plan.C.x, 0.02, plan.C.z);
-      markers.C.position.set(cp.x, cp.y + 0.045, cp.z);
+  let gPos, gOpen, pPos, pOpen;
+  if (t < 1.0) {
+    const s = seg01(t, 0, 1.0);
+    gPos = lerp3(gHome, aboveGrab, s); gOpen = 0.7;
+    pPos = lerp3(pHome, abovePress, s); pOpen = 0.7;
+  } else if (t < 1.3) {
+    const s = seg01(t, 1.0, 1.3);
+    gPos = lerp3(aboveGrab, grabPos, s); gOpen = lerp(0.7, 0.12, s);
+    pPos = lerp3(abovePress, press, s); pOpen = lerp(0.7, 0.3, s);
+  } else {
+    if (!TL.foldStarted) { foldEngine.start(params, garment); TL.foldStarted = true; TL.released = false; }
+    const ft = (t - 1.3) / dur;
+    if (ft < 0.75) {
+      const tr = foldEngine.pointNow(grab.x, grab.y, grab.z);
+      gPos = { x: tr.x, y: tr.y + 0.03, z: tr.z }; gOpen = 0.12;
+    } else {
+      if (!TL.released) { TL.released = true; TL.relPt = foldEngine.pointNow(grab.x, grab.y, grab.z); }
+      const s = seg01(t, relT, relT + 0.6);
+      gPos = lerp3(
+        { x: TL.relPt.x, y: TL.relPt.y + 0.03, z: TL.relPt.z },
+        { x: TL.relPt.x, y: TL.relPt.y + 0.45, z: TL.relPt.z }, s);
+      gOpen = lerp(0.12, 0.7, s);
     }
-    if (t > 2.8) { const s = seg01(t, 2.8, 3.4); rPos = lerp3(rPos, { x: 0.5, y: 0.75, z: 0.25 }, s); rOpen = lerp(0.12, 0.7, s); lPos = lerp3(lPos, { x: -0.5, y: 0.75, z: 0.25 }, s); }
+    pPos = press; pOpen = 0.3;
+    if (t > relT + 0.6) {
+      const s2 = seg01(t, relT + 0.6, endT);
+      pPos = lerp3(press, abovePress, s2); pOpen = lerp(0.3, 0.7, s2);
+      gPos = lerp3(gPos, gHome, s2); gOpen = lerp(gOpen, 0.7, s2);
+    }
   }
-  armTo(armL, lPos, lOpen); armTo(armR, rPos, rOpen);
+  armTo(gArm, gPos, gOpen); armTo(pArm, pPos, pOpen);
+  return endT;
+}
+
+// ---------- 归位 (抓取叠好的衣服放入衣箱) ----------
+function setupPlacing() {
+  const pos = garment.mesh.geometry.attributes.position;
+  let minX = 1e9, maxX = -1e9, minZ = 1e9, maxZ = -1e9, maxY = -1e9;
+  for (let i = 0; i < pos.count; i++) {
+    const x = pos.getX(i), y = pos.getY(i), z = pos.getZ(i);
+    if (x < minX) minX = x; if (x > maxX) maxX = x;
+    if (z < minZ) minZ = z; if (z > maxZ) maxZ = z;
+    if (y > maxY) maxY = y;
+  }
+  const cx = (minX + maxX) / 2, cz = (minZ + maxZ) / 2;
+  const bin = BINS[plan.owner];
+  const arm = (plan.owner === 'dad' || plan.owner === 'mom') ? 'L' : 'R';
+  TL.place = { arm, bin, cx, cz, topY: maxY, dropY: 0.06 + binCounts[plan.owner] * 0.035 };
+}
+function posePlacing(t) {
+  const P = TL.place;
+  const arm = P.arm === 'L' ? armL : armR, home = P.arm === 'L' ? HOME_L : HOME_R;
+  const other = P.arm === 'L' ? armR : armL, otherHome = P.arm === 'L' ? HOME_R : HOME_L;
+  const aboveG = { x: P.cx, y: 0.55, z: P.cz };
+  const grab = { x: P.cx, y: P.topY + 0.03, z: P.cz };
+  const liftG = { x: P.cx, y: 0.6, z: P.cz };
+  const aboveB = { x: P.bin.x, y: 0.6, z: P.bin.z };
+  const drop = { x: P.bin.x, y: P.dropY + 0.03, z: P.bin.z };
+  const T1 = 0.6, T2 = 1.1, T3 = 1.6, T4 = 2.6, T5 = 3.1, T6 = 3.7;
+  let p, open;
+  if (t < T1) { const s = seg01(t, 0, T1); p = lerp3(home, aboveG, s); open = 0.7; }
+  else if (t < T2) { const s = seg01(t, T1, T2); p = lerp3(aboveG, grab, s); open = lerp(0.7, 0.12, s); }
+  else if (t < T3) { const s = seg01(t, T2, T3); p = lerp3(grab, liftG, s); open = 0.12; }
+  else if (t < T4) { const s = seg01(t, T3, T4); p = lerp3(liftG, aboveB, s); open = 0.12; }
+  else if (t < T5) { const s = seg01(t, T4, T5); p = lerp3(aboveB, drop, s); open = 0.12; }
+  else { const s = seg01(t, T5, T6); p = lerp3(drop, aboveB, s); open = lerp(0.12, 0.7, s); }
+  armTo(arm, p, open);
+  armTo(other, otherHome, 0.7);
+  if (t >= T2 && t < T5 && garment) {
+    garment.mesh.position.set(p.x - P.cx, p.y - 0.03 - P.topY, p.z - P.cz);
+  }
+  return T6;
+}
+function finishPlacing() {
+  binCounts[plan.owner]++;
+  updateBinCounts();
+  placedMeshes.push(garment.mesh);
+  garment = null;
+  foldEngine.reset();
 }
 
 // ---------- 五彩纸屑 ----------
@@ -422,32 +511,47 @@ function updateConfetti(dt) {
 // ---------- 机器人视角小窗 ----------
 const inset = document.getElementById('inset');
 function drawInset() {
-  const { img, kp } = plan;
+  const { img, kp, kind } = plan;
   const x = inset.getContext('2d');
   x.putImageData(new ImageData(img.data, img.width, img.height), 0, 0);
   x.strokeStyle = 'rgba(46,160,90,0.9)'; x.lineWidth = 2;
-  x.beginPath();
-  kp.contour.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py)));
-  x.stroke();
-  // B步折痕线 (过 A, 沿衣服朝向)
-  const aPx = w2px(plan.A.x, plan.A.z);
-  x.strokeStyle = 'rgba(255,255,255,0.95)'; x.lineWidth = 2.5; x.setLineDash([9, 7]);
-  x.beginPath();
-  x.moveTo(aPx.x - plan.up.x * 150, aPx.y - plan.up.z * 150);
-  x.lineTo(aPx.x + plan.up.x * 150, aPx.y + plan.up.z * 150);
-  x.stroke(); x.setLineDash([]);
+  if (kp.contour && kp.contour.length) {
+    x.beginPath();
+    kp.contour.forEach(([px, py], i) => (i ? x.lineTo(px, py) : x.moveTo(px, py)));
+    x.stroke();
+  }
   const dot = (p, color, label, r = 5) => {
+    if (!p) return;
     x.fillStyle = color; x.beginPath(); x.arc(p.x, p.y, r, 0, 7); x.fill();
     x.font = 'bold 12px sans-serif'; x.textAlign = 'center';
     x.lineWidth = 3; x.strokeStyle = 'rgba(0,0,0,0.55)';
     x.strokeText(label, p.x, p.y - 10); x.fillStyle = '#fff'; x.fillText(label, p.x, p.y - 10);
   };
-  dot(kp.sleeveL, '#9aa0a6', '袖'); dot(kp.sleeveR, '#9aa0a6', '袖');
-  dot(kp.shoulderL, '#9aa0a6', '肩'); dot(kp.shoulderR, '#9aa0a6', '肩');
-  dot(kp.hemL, '#9aa0a6', '摆'); dot(kp.hemR, '#9aa0a6', '摆');
-  if (kp.armpitL) dot(kp.armpitL, '#b39ddb', '腋', 4);
-  if (kp.armpitR) dot(kp.armpitR, '#b39ddb', '腋', 4);
-  dot(kp.A, '#ff5252', 'A', 7); dot(kp.B, '#ff9f1c', 'B', 7); dot(kp.C, '#3a86ff', 'C', 7);
+  x.font = 'bold 15px sans-serif'; x.textAlign = 'left';
+  x.lineWidth = 4; x.strokeStyle = 'rgba(0,0,0,0.55)'; x.fillStyle = '#fff';
+  const info = `${plan.kindLabel} · ${plan.cls.metricName}${plan.cls.metric.toFixed(2)} → ${OWNERS[plan.owner].label}`;
+  x.strokeText(info, 10, 24); x.fillText(info, 10, 24);
+  if (kind === 'shirt') {
+    const aPx = w2px(plan.kw.A.x, plan.kw.A.z);
+    x.strokeStyle = 'rgba(255,255,255,0.95)'; x.lineWidth = 2.5; x.setLineDash([9, 7]);
+    x.beginPath();
+    x.moveTo(aPx.x - plan.up.x * 150, aPx.y - plan.up.z * 150);
+    x.lineTo(aPx.x + plan.up.x * 150, aPx.y + plan.up.z * 150);
+    x.stroke(); x.setLineDash([]);
+    dot(kp.sleeveL, '#9aa0a6', '袖'); dot(kp.sleeveR, '#9aa0a6', '袖');
+    dot(kp.shoulderL, '#9aa0a6', '肩'); dot(kp.shoulderR, '#9aa0a6', '肩');
+    dot(kp.hemL, '#9aa0a6', '摆'); dot(kp.hemR, '#9aa0a6', '摆');
+    dot(kp.A, '#ff5252', 'A', 7); dot(kp.B, '#ff9f1c', 'B', 7); dot(kp.C, '#3a86ff', 'C', 7);
+  } else {
+    const cPx = w2px(plan.kw.crotch.x, plan.kw.crotch.z);
+    const wC = { x: (plan.kw.waistL.x + plan.kw.waistR.x) / 2, z: (plan.kw.waistL.z + plan.kw.waistR.z) / 2 };
+    const wPx = w2px(wC.x, wC.z);
+    x.strokeStyle = 'rgba(255,255,255,0.95)'; x.lineWidth = 2.5; x.setLineDash([9, 7]);
+    x.beginPath(); x.moveTo(cPx.x, cPx.y); x.lineTo(wPx.x, wPx.y); x.stroke(); x.setLineDash([]);
+    dot(kp.waistL, '#9aa0a6', '腰'); dot(kp.waistR, '#9aa0a6', '腰');
+    dot(kp.crotch, '#ff5252', '裆', 7);
+    dot(kp.cuffL, '#9aa0a6', '脚'); dot(kp.cuffR, '#9aa0a6', '脚');
+  }
 }
 
 // ---------- 主循环 ----------
@@ -459,20 +563,30 @@ function tick() {
   if (dt > 0) {
     TL.t += dt;
     if (TL.state === 'detecting') {
-      if (!TL.entered) { // 进入瞬间执行一次
+      if (!TL.entered) {
         TL.entered = true;
-        detectAndPlan(); drawInset();
-        showMarker('A', plan.A); showMarker('B', plan.B); showMarker('C', plan.C);
+        detectAndPlan(); drawInset(); showMarkers(); buildPills(); setPills(0);
       }
-      if (TL.t >= DUR.detecting) setState('flipB');
-    } else if (TL.state === 'flipB') {
-      poseFlipB(TL.t);
+      if (TL.t >= DUR.detecting) { TL.foldIdx = 0; setState('fold'); }
+    } else if (TL.state === 'fold') {
+      const endT = poseFoldStep(TL.t, plan.folds[TL.foldIdx]);
       foldEngine.update(dt);
-      if (TL.t >= DUR.flipB) setState('foldC');
-    } else if (TL.state === 'foldC') {
-      poseFoldC(TL.t);
-      foldEngine.update(dt);
-      if (TL.t >= DUR.foldC) setState('done');
+      if (TL.t >= endT) {
+        TL.foldIdx++;
+        if (TL.foldIdx >= plan.folds.length) setState('placing');
+        else setState('fold');
+      }
+    } else if (TL.state === 'placing') {
+      const endT = posePlacing(TL.t);
+      if (TL.t >= endT) { finishPlacing(); setState('done'); }
+    } else if (TL.state === 'done') {
+      if (TL.sortMode && TL.t > 1.2) {
+        currentKindKey = 'random';
+        nextGarment(); setState('detecting');
+      } else if (!TL.sortMode) {
+        TL.running = false;
+        document.getElementById('btnPlay').textContent = '▶ 播放';
+      }
     }
   }
   updateConfetti(rawDt);
@@ -488,16 +602,50 @@ window.addEventListener('resize', resize);
 
 // ---------- UI ----------
 const btnPlay = document.getElementById('btnPlay');
+const btnSort = document.getElementById('btnSort');
+function updateSortBtn() {
+  btnSort.textContent = TL.sortMode ? '⏹ 停止分拣' : '🔁 连续分拣';
+  btnSort.classList.toggle('on', TL.sortMode);
+}
+function updateBinCounts() {
+  for (const o of OWNER_KEYS) document.getElementById('c-' + o).textContent = binCounts[o];
+}
 btnPlay.addEventListener('click', () => {
+  if (TL.sortMode) { // 分拣中: 暂停/继续
+    TL.running = !TL.running;
+    btnPlay.textContent = TL.running ? '⏸ 暂停' : '▶ 播放';
+    return;
+  }
   if (TL.state === 'idle' || TL.state === 'done') {
-    if (TL.state === 'done') resetAll();
+    if (TL.state === 'done' || !garment) nextGarment();
     TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
   } else {
     TL.running = !TL.running;
     btnPlay.textContent = TL.running ? '⏸ 暂停' : '▶ 播放';
   }
 });
-document.getElementById('btnAgain').addEventListener('click', () => { resetAll(); TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停'; });
+document.getElementById('btnAgain').addEventListener('click', () => {
+  TL.sortMode = false; updateSortBtn();
+  nextGarment(); TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
+});
+btnSort.addEventListener('click', () => {
+  TL.sortMode = !TL.sortMode; updateSortBtn();
+  if (TL.sortMode) {
+    currentKindKey = 'random';
+    document.querySelectorAll('[data-kind]').forEach((b) => b.classList.toggle('on', b.dataset.kind === 'random'));
+    if (TL.state === 'idle' || TL.state === 'done') nextGarment();
+    TL.running = true; setState('detecting'); btnPlay.textContent = '⏸ 暂停';
+  }
+  // 关闭分拣: 当前这件完成后回到 idle (done 状态处理)
+});
+document.querySelectorAll('[data-kind]').forEach((b) =>
+  b.addEventListener('click', () => {
+    currentKindKey = b.dataset.kind;
+    document.querySelectorAll('[data-kind]').forEach((o) => o.classList.remove('on'));
+    b.classList.add('on');
+    if (TL.state === 'idle' || TL.state === 'done') { nextGarment(); }
+  })
+);
 document.querySelectorAll('[data-speed]').forEach((b) =>
   b.addEventListener('click', () => {
     TL.timeScale = parseFloat(b.dataset.speed);
@@ -506,20 +654,12 @@ document.querySelectorAll('[data-speed]').forEach((b) =>
   })
 );
 
-function resetAll() {
-  buildShirt(); foldEngine.reset(); hideMarkers();
-  if (confetti) { scene.remove(confetti.pts); confetti = null; }
-  armTo(armL, HOME_L, 0.7); armTo(armR, HOME_R, 0.7);
-  plan = null;
-  const x = inset.getContext('2d'); x.clearRect(0, 0, inset.width, inset.height);
-  setState('idle');
-}
-
 // ---------- 启动 ----------
-buildShirt();
+nextGarment();
 resize();
 setState('idle');
-window.__fb = { TL, get plan() { return plan; }, foldEngine }; // 调试图: 快进验证用
+updateBinCounts();
+window.__fb = { TL, get plan() { return plan; }, get garment() { return garment; }, foldEngine, binCounts };
 window.addEventListener('error', (e) => { document.title = 'ERR: ' + (e.message || e.error); });
 if (new URLSearchParams(location.search).has('autostart')) btnPlay.click();
 tick();
