@@ -12,12 +12,33 @@ const afterFold = (f, p) => sideOfLine(f.px, f.pz, f.dx, f.dz, p.x, p.z) * f.fol
   ? foldPointVert(f.px, f.pz, f.dx, f.dz, f.axisH, f.foldSign, 1, p.x, p.y, p.z)
   : { ...p };
 
-/** T恤: B步左折 + C步右折(镜像) + D步下摆上翻对折 */
-export function planFolds(k) {
+/** T恤: 长袖先收袖(左袖→右袖) + B步左折 + C步右折(镜像) + D步下摆上翻对折
+ *  k: 关键点; sleeve: 'short'|'long' (长袖加收袖两步) */
+export function planFolds(k, sleeve = 'short') {
   const hemMid = { x: (k.hemL.x + k.hemR.x) / 2, y: 0.002, z: (k.hemL.z + k.hemR.z) / 2 };
   const topMid = { x: (k.shoulderL.x + k.shoulderR.x) / 2, z: (k.shoulderL.z + k.shoulderR.z) / 2 };
   const up = norm2({ x: topMid.x - hemMid.x, z: topMid.z - hemMid.z });
   const right = norm2({ x: k.sleeveR.x - k.sleeveL.x, z: k.sleeveR.z - k.sleeveL.z });
+  const folds = [];
+  // 长袖：先收袖子（沿身体侧边把袖子折到身上）
+  if (sleeve === 'long') {
+    const ssL = sideOfLine(k.shoulderL.x, k.shoulderL.z, up.x, up.z, k.sleeveL.x, k.sleeveL.z);
+    folds.push({
+      params: { px: k.shoulderL.x, pz: k.shoulderL.z, dx: up.x, dz: up.z,
+                foldSign: ssL >= 0 ? 1 : -1, axisH: 0.008, duration: 1.6 },
+      label: '收左袖', status: 'A·收左袖 — 左臂抓左袖口, 沿左肩线内折',
+      grab: { x: k.sleeveL.x, y: 0.002, z: k.sleeveL.z }, grabArm: 'L',
+      press: { x: k.shoulderL.x, y: 0.03, z: k.shoulderL.z }, pressArm: 'R',
+    });
+    const ssR = sideOfLine(k.shoulderR.x, k.shoulderR.z, up.x, up.z, k.sleeveR.x, k.sleeveR.z);
+    folds.push({
+      params: { px: k.shoulderR.x, pz: k.shoulderR.z, dx: up.x, dz: up.z,
+                foldSign: ssR >= 0 ? 1 : -1, axisH: 0.008, duration: 1.6 },
+      label: '收右袖', status: 'B·收右袖 — 右臂抓右袖口, 沿右肩线内折',
+      grab: { x: k.sleeveR.x, y: 0.002, z: k.sleeveR.z }, grabArm: 'R',
+      press: { x: k.shoulderR.x, y: 0.03, z: k.shoulderR.z }, pressArm: 'L',
+    });
+  }
   // 左折 (沿左 ABC 线)
   const s1 = sideOfLine(k.A.x, k.A.z, up.x, up.z, k.sleeveL.x, k.sleeveL.z);
   const fold1 = { px: k.A.x, pz: k.A.z, dx: up.x, dz: up.z, foldSign: s1 >= 0 ? 1 : -1, axisH: 0.008, duration: 1.6 };
@@ -39,7 +60,7 @@ export function planFolds(k) {
   const fold2 = { px: k.B.x, pz: k.B.z, dx: right.x, dz: right.z, foldSign: s2 >= 0 ? 1 : -1, axisH: 0.014, duration: 1.5 };
   const keep2 = norm2({ x: k.B.x - hemMidF.x, z: k.B.z - hemMidF.z });
   const pressB = { x: k.B.x + keep2.x * 0.05, y: 0.04, z: k.B.z + keep2.z * 0.05 };
-  const folds = [
+  folds.push(
     {
       params: fold1, label: '左折', status: 'B·左折 — 左臂抓左袖口, 沿左 ABC 线翻折',
       grab: grabTip, grabArm: 'L', press: pressC, pressArm: 'R',
@@ -52,8 +73,7 @@ export function planFolds(k) {
       params: fold2, label: '对折', status: 'D·对折 — 右臂抓下摆, 上翻对折',
       grab: { ...hemMidF }, grabArm: 'R', press: pressB, pressArm: 'L',
       track: { name: 'C', p: { x: k.C.x, y: 0.002, z: k.C.z } },
-    },
-  ];
+    });
   const markers = [
     { name: 'A', x: k.A.x, y: k.A.y, z: k.A.z, color: '#ff5252', label: 'A' },
     { name: 'A2', x: A2.x, y: A2.y, z: A2.z, color: '#ff5252', label: "A'" },
